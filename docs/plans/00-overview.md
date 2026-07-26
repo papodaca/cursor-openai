@@ -46,7 +46,7 @@ flowchart LR
 | Doc | Phase | Deliverable |
 |-----|-------|-------------|
 | [01-mvp-openai-bridge.md](./01-mvp-openai-bridge.md) | 1 | Working `/v1/chat/completions` + `/v1/models` (text only) |
-| [02-auth-and-config.md](./02-auth-and-config.md) | 1 (parallel) | Credentials, env, Bearer passthrough |
+| [02-auth-and-config.md](./02-auth-and-config.md) | 1 (parallel) | CLI `--auth`/`--api-key`, oauth refresh, proxy Bearer |
 | [03-future-tool-calling.md](./03-future-tool-calling.md) | 2+ | OpenAI tool passthrough (post-MVP) |
 
 ## Non-goals (near term)

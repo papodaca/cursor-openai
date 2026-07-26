@@ -1,12 +1,15 @@
 import type { AppConfig } from "./config.ts"
-import { resolveCredential } from "./auth.ts"
+import { requireProxyApiKey } from "./auth.ts"
+import type { AuthSession } from "./auth-session.ts"
 import { handleChatCompletion } from "./bridge.ts"
 import { getLanguageModel } from "./cursor.ts"
 import { ApiError, corsHeaders, errorResponse } from "./errors.ts"
 import { listModels } from "./models.ts"
 import { parseChatCompletionRequest } from "./openai/request.ts"
 
-export function createHandler(config: AppConfig) {
+export type AuthTokenSource = Pick<AuthSession, "getAccessToken">
+
+export function createHandler(config: AppConfig, auth: AuthTokenSource) {
   return async function handler(req: Request): Promise<Response> {
     try {
       if (req.method === "OPTIONS") {
@@ -20,11 +23,14 @@ export function createHandler(config: AppConfig) {
       }
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
+        requireProxyApiKey(req, config)
         const body = await listModels(config)
         return Response.json(body, { headers: corsHeaders() })
       }
 
       if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+        requireProxyApiKey(req, config)
+
         let json: unknown
         try {
           json = await req.json()
@@ -33,8 +39,8 @@ export function createHandler(config: AppConfig) {
         }
 
         const parsed = parseChatCompletionRequest(json)
-        const credential = resolveCredential(req, config)
-        const model = getLanguageModel(parsed.model, credential, config)
+        const accessToken = await auth.getAccessToken()
+        const model = getLanguageModel(parsed.model, accessToken, config)
         return await handleChatCompletion({
           model,
           request: parsed,
@@ -49,8 +55,8 @@ export function createHandler(config: AppConfig) {
   }
 }
 
-export function startServer(config: AppConfig) {
-  const fetch = createHandler(config)
+export function startServer(config: AppConfig, auth: AuthTokenSource) {
+  const fetch = createHandler(config, auth)
   const server = Bun.serve({
     port: config.port,
     fetch,

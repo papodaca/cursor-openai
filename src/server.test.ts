@@ -1,15 +1,27 @@
+import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import { parseChatCompletionRequest } from "./openai/request.ts"
 import { ApiError } from "./errors.ts"
-import { resolveCredential } from "./auth.ts"
+import { requireProxyApiKey } from "./auth.ts"
+import { HelpRequested, loadConfig, parseArgs, resolveAuthPath } from "./config.ts"
 import type { AppConfig } from "./config.ts"
 import { createHandler } from "./server.ts"
 import { listModels } from "./models.ts"
+import {
+  decodeJwtExpiryMs,
+  parseAuthFile,
+} from "./auth-session.ts"
 
 const baseConfig: AppConfig = {
   port: 8787,
+  proxyApiKey: "proxy-secret",
+  authPath: "/tmp/cursor-openai-auth.json",
   cacheDir: "/tmp/cursor-openai-test-cache",
-  apiKey: "sk-test",
+  apiBaseURL: "https://api2.cursor.sh",
+}
+
+const authStub = {
+  getAccessToken: async () => "cursor-access-token",
 }
 
 describe("parseChatCompletionRequest", () => {
@@ -37,45 +49,139 @@ describe("parseChatCompletionRequest", () => {
   })
 })
 
-describe("resolveCredential", () => {
-  test("prefers Bearer over env", () => {
-    const req = new Request("http://localhost/v1/chat/completions", {
-      headers: { Authorization: "Bearer sk-from-header" },
-    })
-    const cred = resolveCredential(req, {
-      ...baseConfig,
-      apiKey: "sk-from-env",
-    })
-    expect(cred).toEqual({ kind: "apiKey", value: "sk-from-header" })
+describe("CLI / config", () => {
+  test("resolveAuthPath strips @ prefix", () => {
+    expect(resolveAuthPath("@auth.json")).toBe(path.resolve("auth.json"))
+    expect(resolveAuthPath("./auth.json")).toBe(path.resolve("./auth.json"))
   })
 
-  test("classifies JWT bearer as accessToken", () => {
+  test("parseArgs requires --auth and --api-key", () => {
+    expect(() => parseArgs([])).toThrow(/--auth/)
+    expect(() => parseArgs(["--auth", "@auth.json"])).toThrow(/--api-key/)
+  })
+
+  test("parseArgs accepts flags", () => {
+    const cli = parseArgs(["--auth", "@/tmp/a.json", "--api-key", "k", "--port", "9000"])
+    expect(cli.authPath).toBe(path.resolve("/tmp/a.json"))
+    expect(cli.proxyApiKey).toBe("k")
+    expect(cli.port).toBe(9000)
+  })
+
+  test("parseArgs --help throws HelpRequested", () => {
+    expect(() => parseArgs(["--help"])).toThrow(HelpRequested)
+  })
+
+  test("loadConfig merges defaults", () => {
+    const cfg = loadConfig(
+      {
+        authPath: "/tmp/a.json",
+        proxyApiKey: "k",
+      },
+      {},
+    )
+    expect(cfg.port).toBe(8787)
+    expect(cfg.apiBaseURL).toBe("https://api2.cursor.sh")
+    expect(cfg.proxyApiKey).toBe("k")
+  })
+})
+
+describe("requireProxyApiKey", () => {
+  test("accepts matching Bearer", () => {
     const req = new Request("http://localhost/v1/chat/completions", {
-      headers: { Authorization: "Bearer eyJhbGciOi.test" },
+      headers: { Authorization: "Bearer proxy-secret" },
     })
-    const cred = resolveCredential(req, baseConfig)
-    expect(cred.kind).toBe("accessToken")
+    expect(() => requireProxyApiKey(req, baseConfig)).not.toThrow()
+  })
+
+  test("rejects wrong key", () => {
+    const req = new Request("http://localhost/v1/chat/completions", {
+      headers: { Authorization: "Bearer wrong" },
+    })
+    expect(() => requireProxyApiKey(req, baseConfig)).toThrow(ApiError)
   })
 
   test("401 when missing", () => {
     const req = new Request("http://localhost/v1/chat/completions")
+    expect(() => requireProxyApiKey(req, baseConfig)).toThrow(ApiError)
+  })
+})
+
+describe("auth file helpers", () => {
+  const sampleAccess = "a".repeat(40)
+  const sampleRefresh = "r".repeat(40)
+
+  test("parseAuthFile validates shape", () => {
+    const auth = parseAuthFile({
+      type: "oauth",
+      refresh: sampleRefresh,
+      access: sampleAccess,
+      expires: 1,
+    })
+    expect(auth.refresh).toBe(sampleRefresh)
+    expect(auth.access).toBe(sampleAccess)
+  })
+
+  test("parseAuthFile accepts OpenCode provider map", () => {
+    const auth = parseAuthFile({
+      cursor: {
+        type: "oauth",
+        refresh: sampleRefresh,
+        access: sampleAccess,
+        expires: 42,
+      },
+      other: { type: "api", key: "x" },
+    })
+    expect(auth.expires).toBe(42)
+  })
+
+  test("parseAuthFile rejects placeholders", () => {
     expect(() =>
-      resolveCredential(req, { port: 8787, cacheDir: "/tmp" }),
-    ).toThrow(ApiError)
+      parseAuthFile({
+        type: "oauth",
+        refresh: "<snip>",
+        access: "<snip>",
+        expires: 1,
+      }),
+    ).toThrow(/placeholder/)
+  })
+
+  test("parseAuthFile rejects bad type", () => {
+    expect(() => parseAuthFile({ type: "api" })).toThrow(/oauth/)
+  })
+
+  test("decodeJwtExpiryMs reads exp", () => {
+    const payload = Buffer.from(JSON.stringify({ exp: 1_700_000_000 })).toString("base64url")
+    const jwt = `x.${payload}.y`
+    expect(decodeJwtExpiryMs(jwt)).toBe(1_700_000_000_000)
   })
 })
 
 describe("HTTP routes", () => {
   test("GET /health", async () => {
-    const handler = createHandler(baseConfig)
+    const handler = createHandler(baseConfig, authStub)
     const res = await handler(new Request("http://localhost/health"))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
   })
 
-  test("GET /v1/models fallback", async () => {
+  test("GET /v1/models requires auth", async () => {
+    const handler = createHandler(baseConfig, authStub)
+    const unauth = await handler(new Request("http://localhost/v1/models"))
+    expect(unauth.status).toBe(401)
+
+    const ok = await handler(
+      new Request("http://localhost/v1/models", {
+        headers: { Authorization: "Bearer proxy-secret" },
+      }),
+    )
+    expect(ok.status).toBe(200)
+    const body = (await ok.json()) as { object: string }
+    expect(body.object).toBe("list")
+  })
+
+  test("GET /v1/models fallback via listModels", async () => {
     const data = await listModels({
-      port: 8787,
+      ...baseConfig,
       cacheDir: "/tmp/does-not-exist-cursor-openai",
     })
     expect(data.object).toBe("list")
@@ -83,11 +189,14 @@ describe("HTTP routes", () => {
   })
 
   test("POST rejects tools with 400", async () => {
-    const handler = createHandler(baseConfig)
+    const handler = createHandler(baseConfig, authStub)
     const res = await handler(
       new Request("http://localhost/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer proxy-secret",
+        },
         body: JSON.stringify({
           model: "composer-2.5",
           messages: [{ role: "user", content: "Hi" }],
@@ -96,16 +205,34 @@ describe("HTTP routes", () => {
       }),
     )
     expect(res.status).toBe(400)
-    const body = await res.json()
+    const body = (await res.json()) as { error: { code: string } }
     expect(body.error.code).toBe("tools_not_supported")
   })
 
   test("POST without credentials returns 401", async () => {
-    const handler = createHandler({ port: 8787, cacheDir: "/tmp" })
+    const handler = createHandler(baseConfig, authStub)
     const res = await handler(
       new Request("http://localhost/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "composer-2.5",
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      }),
+    )
+    expect(res.status).toBe(401)
+  })
+
+  test("POST with wrong API key returns 401", async () => {
+    const handler = createHandler(baseConfig, authStub)
+    const res = await handler(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer wrong",
+        },
         body: JSON.stringify({
           model: "composer-2.5",
           messages: [{ role: "user", content: "Hi" }],

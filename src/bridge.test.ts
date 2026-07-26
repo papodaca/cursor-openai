@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
+  LanguageModelV3FinishReason,
   LanguageModelV3StreamPart,
+  LanguageModelV3Usage,
 } from "@ai-sdk/provider"
 import { handleChatCompletion } from "./bridge.ts"
 import type { OpenAIChatCompletionRequest } from "./openai/request.ts"
@@ -15,11 +17,11 @@ function mockModel(parts: LanguageModelV3StreamPart[]): LanguageModelV3 {
     supportedUrls: {},
     async doGenerate(_options: LanguageModelV3CallOptions) {
       let text = ""
-      let finish = {
-        unified: "stop" as const,
+      let finishReason: LanguageModelV3FinishReason = {
+        unified: "stop",
         raw: undefined,
       }
-      let usage = {
+      let usage: LanguageModelV3Usage = {
         inputTokens: {
           total: 3,
           noCache: undefined,
@@ -35,13 +37,13 @@ function mockModel(parts: LanguageModelV3StreamPart[]): LanguageModelV3 {
       for (const part of parts) {
         if (part.type === "text-delta") text += part.delta
         if (part.type === "finish") {
-          finish = part.finishReason
+          finishReason = part.finishReason
           usage = part.usage
         }
       }
       return {
         content: [{ type: "text" as const, text }],
-        finishReason: finish,
+        finishReason,
         usage,
         warnings: [],
       }
@@ -89,10 +91,13 @@ describe("handleChatCompletion", () => {
     ])
     const res = await handleChatCompletion({ model, request: baseRequest })
     expect(res.status).toBe(200)
-    const body = await res.json()
+    const body = (await res.json()) as {
+      object: string
+      choices: Array<{ message: { content: string }; finish_reason: string }>
+    }
     expect(body.object).toBe("chat.completion")
-    expect(body.choices[0].message.content).toBe("Hello")
-    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0]?.message.content).toBe("Hello")
+    expect(body.choices[0]?.finish_reason).toBe("stop")
   })
 
   test("stream ends with [DONE]", async () => {

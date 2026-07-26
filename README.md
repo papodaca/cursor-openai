@@ -7,9 +7,9 @@ OpenAI-compatible HTTP API that talks to Cursor subscription models via [`cursor
 ## Requirements
 
 - [Bun](https://bun.sh)
-- A Cursor account with API access (`sk-...` from [cursor.com/settings](https://cursor.com/settings), or an access JWT)
+- Cursor oauth tokens in an `auth.json` file (refresh + access + expires), typically obtained via OpenCode / the upstream provider login flow
 
-Personal use only — same ToS caveats as the upstream provider. Do not expose this proxy publicly without understanding that client `Bearer` tokens are forwarded to Cursor.
+Personal use only — same ToS caveats as the upstream provider. Do not expose this proxy publicly without an API key and network controls.
 
 ## Install
 
@@ -17,53 +17,77 @@ Personal use only — same ToS caveats as the upstream provider. Do not expose t
 bun install
 ```
 
+## Auth model
+
+Two separate credentials:
+
+1. **Proxy API key** (`--api-key`) — clients must send `Authorization: Bearer <proxy-api-key>`. This authenticates callers to *this* server only.
+2. **Cursor oauth** (`--auth`) — server loads `auth.json`, uses the access token for Cursor API calls, and refreshes on a timer before expiry (persisting updates back to the file).
+
+`auth.json` shape (flat):
+
+```json
+{
+  "type": "oauth",
+  "refresh": "<refresh-token>",
+  "access": "<access-jwt>",
+  "expires": 1710000000000
+}
+```
+
+`expires` is epoch **milliseconds**. Placeholder values like `"<snip>"` are rejected at startup.
+
+You can also point `--auth` at OpenCode's provider map (`~/.local/share/opencode/auth.json`); the `cursor` entry is used.
+
 ## Configure
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `CURSOR_API_KEY` | one of key/token | Cursor API key (`sk-...`) |
-| `CURSOR_ACCESS_TOKEN` | one of key/token | Cursor JWT access token |
-| `PORT` | no | Listen port (default `8787`) |
-| `CURSOR_CACHE_DIR` | no | Host cache for `cursor-models.json` (default `~/.cache/opencode`) |
-| `CURSOR_WORKSPACE` | no | Optional workspace root passed to the provider |
-| `CURSOR_API_BASE_URL` | no | Override Cursor API base |
-| `CURSOR_AGENT_BASE_URL` | no | Override Cursor agent Run host |
-| `CURSOR_MODELS` | no | Comma-separated model ids for `GET /v1/models` |
-| `CURSOR_PROVIDER_DEBUG` | no | Provider wire debug (`1` / `true`) |
+### Required CLI flags
 
-Credential precedence per request:
+| Flag | Env fallback | Description |
+|------|--------------|-------------|
+| `--auth <path>` | `CURSOR_AUTH_FILE` | Path to oauth `auth.json` (`@path` supported, e.g. `--auth @auth.json`) |
+| `--api-key <key>` | `CURSOR_OPENAI_API_KEY` or `API_KEY` | Proxy API key clients must present as Bearer |
 
-1. `Authorization: Bearer <value>` (if `sk-…` → API key, else → access token)
-2. `CURSOR_ACCESS_TOKEN`
-3. `CURSOR_API_KEY`
-4. else `401`
+### Optional
+
+| Flag / Variable | Description |
+|-----------------|-------------|
+| `--port` / `PORT` | Listen port (default `8787`) |
+| `--cache-dir` / `CURSOR_CACHE_DIR` | Host cache for `cursor-models.json` (default `~/.cache/opencode`) |
+| `--workspace` / `CURSOR_WORKSPACE` | Optional workspace root passed to the provider |
+| `--api-base-url` / `CURSOR_API_BASE_URL` | Override Cursor API base |
+| `--agent-base-url` / `CURSOR_AGENT_BASE_URL` | Override Cursor agent Run host |
+| `CURSOR_MODELS` | Comma-separated model ids for `GET /v1/models` |
+| `CURSOR_PROVIDER_DEBUG` | Provider wire debug (`1` / `true`) |
 
 ## Run
 
 ```bash
-export CURSOR_API_KEY=sk-...
-bun start
-# or: bun run dev
+bun start --auth @auth.json --api-key "local-dev-secret"
+# or: bun run dev -- --auth @auth.json --api-key "local-dev-secret"
 ```
 
 Listens on `http://localhost:8787`.
 
 ## Endpoints
 
-| Method | Path | Notes |
-|--------|------|-------|
-| `GET` | `/health` | Liveness |
-| `GET` | `/v1/models` | Allowlist → cache → fallback `composer-2.5` |
-| `POST` | `/v1/chat/completions` | Stream + non-stream; text only |
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/health` | no | Liveness |
+| `GET` | `/v1/models` | Bearer proxy key | Allowlist → cache → fallback `composer-2.5` |
+| `POST` | `/v1/chat/completions` | Bearer proxy key | Stream + non-stream; text only |
 
 ## Examples
 
 ```bash
-curl -s http://localhost:8787/v1/models
+export PROXY_KEY=local-dev-secret
+
+curl -s http://localhost:8787/v1/models \
+  -H "Authorization: Bearer $PROXY_KEY"
 
 curl -s http://localhost:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $CURSOR_API_KEY" \
+  -H "Authorization: Bearer $PROXY_KEY" \
   -d '{
     "model": "composer-2.5",
     "messages": [{"role": "user", "content": "Say hi in one sentence."}]
@@ -71,7 +95,7 @@ curl -s http://localhost:8787/v1/chat/completions \
 
 curl -N http://localhost:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $CURSOR_API_KEY" \
+  -H "Authorization: Bearer $PROXY_KEY" \
   -d '{
     "model": "composer-2.5",
     "stream": true,
@@ -85,7 +109,7 @@ OpenAI JS SDK:
 import OpenAI from "openai"
 
 const client = new OpenAI({
-  apiKey: process.env.CURSOR_API_KEY,
+  apiKey: process.env.PROXY_KEY, // proxy API key, not a Cursor sk-
   baseURL: "http://localhost:8787/v1",
 })
 
