@@ -15,7 +15,7 @@ Ship a Bun HTTP server that accepts OpenAI Chat Completions (stream + non-stream
 - [x] `GET /v1/models` returns an OpenAI-shaped model list (from cache and/or allowlist).
 - [x] `POST /v1/chat/completions` with `stream: false` returns a valid `chat.completion` with text content.
 - [x] Same endpoint with `stream: true` emits SSE chunks ending in `data: [DONE]`.
-- [x] Requests that include `tools` or `functions` are rejected with a clear 400 (or documented ignore — prefer **400**).
+- [x] Requests that include legacy `functions` / `function_call` are rejected with a clear 400. (`tools` / `tool_choice` are phase 2+ — see [03](./03-future-tool-calling.md).)
 - [ ] Smoke test with `curl` and the official OpenAI JS/Python client against `baseURL=http://localhost:<port>/v1` succeeds for plain chat. _(unit/mock covered; live Cursor turn needs credentials)_
 - [x] README documents how to run, auth env vars, and example model ids.
 

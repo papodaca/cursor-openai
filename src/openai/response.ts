@@ -1,4 +1,5 @@
 import type { LanguageModelV3FinishReason, LanguageModelV3Usage } from "@ai-sdk/provider"
+import type { OpenAIToolCall } from "./request.ts"
 
 export function completionId(): string {
   return `chatcmpl-${crypto.randomUUID().replace(/-/g, "")}`
@@ -45,10 +46,15 @@ export function chatCompletionResponse(args: {
   id: string
   model: string
   created: number
-  content: string
+  content: string | null
+  toolCalls?: OpenAIToolCall[]
   finishReason: ReturnType<typeof mapFinishReason>
   usage?: ReturnType<typeof mapUsage>
 }) {
+  const toolCalls = args.toolCalls && args.toolCalls.length > 0 ? args.toolCalls : undefined
+  const finishReason =
+    args.finishReason ?? (toolCalls ? "tool_calls" : "stop")
+
   return {
     id: args.id,
     object: "chat.completion" as const,
@@ -60,8 +66,9 @@ export function chatCompletionResponse(args: {
         message: {
           role: "assistant" as const,
           content: args.content,
+          ...(toolCalls ? { tool_calls: toolCalls } : {}),
         },
-        finish_reason: args.finishReason ?? "stop",
+        finish_reason: finishReason,
       },
     ],
     ...(args.usage ? { usage: args.usage } : {}),

@@ -38,12 +38,48 @@ describe("parseChatCompletionRequest", () => {
     expect(req.messages[1]?.content).toBe("Hi")
   })
 
-  test("rejects tools", () => {
+  test("parses tools and tool messages", () => {
+    const req = parseChatCompletionRequest({
+      model: "composer-2.5",
+      tool_choice: "auto",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Weather",
+            parameters: { type: "object", properties: { city: { type: "string" } } },
+          },
+        },
+      ],
+      messages: [
+        { role: "user", content: "Weather?" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"SF"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "sunny" },
+      ],
+    })
+    expect(req.tools?.[0]?.function.name).toBe("get_weather")
+    expect(req.toolChoice).toBe("auto")
+    expect(req.messages[1]).toMatchObject({ role: "assistant" })
+    expect(req.messages[2]).toMatchObject({ role: "tool", tool_call_id: "call_1" })
+  })
+
+  test("rejects legacy functions field", () => {
     expect(() =>
       parseChatCompletionRequest({
         model: "composer-2.5",
         messages: [{ role: "user", content: "Hi" }],
-        tools: [],
+        functions: [{ name: "x" }],
       }),
     ).toThrow(ApiError)
   })
@@ -188,7 +224,7 @@ describe("HTTP routes", () => {
     expect(data.data.some((m) => m.id === "composer-2.5")).toBe(true)
   })
 
-  test("POST rejects tools with 400", async () => {
+  test("POST rejects legacy functions with 400", async () => {
     const handler = createHandler(baseConfig, authStub)
     const res = await handler(
       new Request("http://localhost/v1/chat/completions", {
@@ -200,7 +236,7 @@ describe("HTTP routes", () => {
         body: JSON.stringify({
           model: "composer-2.5",
           messages: [{ role: "user", content: "Hi" }],
-          tools: [{ type: "function", function: { name: "x" } }],
+          functions: [{ name: "x" }],
         }),
       }),
     )

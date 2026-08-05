@@ -12,7 +12,7 @@ Run a local (or self-hosted) **OpenAI-compatible HTTP API** that translates Chat
 | Decision | Choice |
 |----------|--------|
 | Primary clients | Any OpenAI-compatible client (curl, OpenAI SDK, Continue, Cline, LiteLLM, etc.) |
-| MVP tools | Chat/text only — ignore or reject `tools` / `functions` |
+| MVP tools | Chat/text first; OpenAI tool pass-through in phase 2+ ([03](./03-future-tool-calling.md)) |
 | Cursor integration | Reuse npm package `cursor-opencode-provider` via `createCursor()` |
 | Local clone | `./cursor-opencode-provider` is **reference only**, not a runtime dependency |
 | Runtime | Bun (`Bun.serve`) |

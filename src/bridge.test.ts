@@ -6,8 +6,24 @@ import type {
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider"
-import { handleChatCompletion } from "./bridge.ts"
+import { handleChatCompletion, toCallOptions } from "./bridge.ts"
 import type { OpenAIChatCompletionRequest } from "./openai/request.ts"
+
+function emptyUsage(): LanguageModelV3Usage {
+  return {
+    inputTokens: {
+      total: undefined,
+      noCache: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+    outputTokens: {
+      total: undefined,
+      text: undefined,
+      reasoning: undefined,
+    },
+  }
+}
 
 function mockModel(parts: LanguageModelV3StreamPart[]): LanguageModelV3 {
   return {
@@ -17,6 +33,12 @@ function mockModel(parts: LanguageModelV3StreamPart[]): LanguageModelV3 {
     supportedUrls: {},
     async doGenerate(_options: LanguageModelV3CallOptions) {
       let text = ""
+      const toolCalls: Array<{
+        type: "tool-call"
+        toolCallId: string
+        toolName: string
+        input: string
+      }> = []
       let finishReason: LanguageModelV3FinishReason = {
         unified: "stop",
         raw: undefined,
@@ -36,13 +58,24 @@ function mockModel(parts: LanguageModelV3StreamPart[]): LanguageModelV3 {
       }
       for (const part of parts) {
         if (part.type === "text-delta") text += part.delta
+        if (part.type === "tool-call") {
+          toolCalls.push({
+            type: "tool-call",
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input,
+          })
+        }
         if (part.type === "finish") {
           finishReason = part.finishReason
           usage = part.usage
         }
       }
       return {
-        content: [{ type: "text" as const, text }],
+        content: [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...toolCalls,
+        ],
         finishReason,
         usage,
         warnings: [],
@@ -106,19 +139,7 @@ describe("handleChatCompletion", () => {
       {
         type: "finish",
         finishReason: { unified: "stop", raw: undefined },
-        usage: {
-          inputTokens: {
-            total: undefined,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: undefined,
-            text: undefined,
-            reasoning: undefined,
-          },
-        },
+        usage: emptyUsage(),
       },
     ])
     const res = await handleChatCompletion({
@@ -130,5 +151,164 @@ describe("handleChatCompletion", () => {
     expect(text).toContain("data: ")
     expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
     expect(text).toContain('"content":"Hi"')
+  })
+
+  test("non-stream maps tool_calls", async () => {
+    const model = mockModel([
+      {
+        type: "tool-call",
+        toolCallId: "cursor_sess_1",
+        toolName: "get_weather",
+        input: JSON.stringify({ city: "SF" }),
+      },
+      {
+        type: "finish",
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: emptyUsage(),
+      },
+    ])
+    const res = await handleChatCompletion({
+      model,
+      request: {
+        ...baseRequest,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_weather",
+              parameters: { type: "object", properties: { city: { type: "string" } } },
+            },
+          },
+        ],
+      },
+    })
+    const body = (await res.json()) as {
+      choices: Array<{
+        finish_reason: string
+        message: {
+          content: string | null
+          tool_calls: Array<{ id: string; function: { name: string; arguments: string } }>
+        }
+      }>
+    }
+    expect(body.choices[0]?.finish_reason).toBe("tool_calls")
+    expect(body.choices[0]?.message.content).toBeNull()
+    expect(body.choices[0]?.message.tool_calls[0]?.function.name).toBe("get_weather")
+    expect(body.choices[0]?.message.tool_calls[0]?.function.arguments).toContain("SF")
+  })
+
+  test("stream emits tool_calls argument deltas", async () => {
+    const model = mockModel([
+      {
+        type: "tool-input-start",
+        id: "cursor_sess_1",
+        toolName: "get_weather",
+      },
+      {
+        type: "tool-input-delta",
+        id: "cursor_sess_1",
+        delta: '{"city":',
+      },
+      {
+        type: "tool-input-delta",
+        id: "cursor_sess_1",
+        delta: '"SF"}',
+      },
+      {
+        type: "tool-input-end",
+        id: "cursor_sess_1",
+      },
+      {
+        type: "tool-call",
+        toolCallId: "cursor_sess_1",
+        toolName: "get_weather",
+        input: '{"city":"SF"}',
+      },
+      {
+        type: "finish",
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: emptyUsage(),
+      },
+    ])
+    const res = await handleChatCompletion({
+      model,
+      request: { ...baseRequest, stream: true },
+    })
+    const text = await res.text()
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"name":"get_weather"')
+    expect(text).toContain('\\"city\\"')
+    expect(text).toContain('\\"SF\\"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
+  })
+})
+
+describe("toCallOptions", () => {
+  test("maps tools and tool results into V3 prompt", () => {
+    const options = toCallOptions(
+      {
+        model: "composer-2.5",
+        stream: false,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_weather",
+              description: "Weather lookup",
+              parameters: { type: "object", properties: { city: { type: "string" } } },
+            },
+          },
+        ],
+        toolChoice: "auto",
+        messages: [
+          { role: "user", content: "Weather in SF?" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "cursor_sess_1",
+                type: "function",
+                function: { name: "get_weather", arguments: '{"city":"SF"}' },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "cursor_sess_1",
+            content: "68F and sunny",
+          },
+        ],
+      },
+      undefined,
+      { "x-opencode-session": "conv-1" },
+    )
+
+    expect(options.tools?.[0]?.name).toBe("get_weather")
+    expect(options.toolChoice).toEqual({ type: "auto" })
+    expect(options.headers?.["x-opencode-session"]).toBe("conv-1")
+
+    const assistant = options.prompt.find((m) => m.role === "assistant")
+    expect(assistant?.role).toBe("assistant")
+    if (assistant?.role === "assistant") {
+      const call = assistant.content.find((p) => p.type === "tool-call")
+      expect(call).toMatchObject({
+        type: "tool-call",
+        toolCallId: "cursor_sess_1",
+        toolName: "get_weather",
+      })
+    }
+
+    const tool = options.prompt.find((m) => m.role === "tool")
+    expect(tool?.role).toBe("tool")
+    if (tool?.role === "tool") {
+      expect(tool.content[0]).toMatchObject({
+        type: "tool-result",
+        toolCallId: "cursor_sess_1",
+        toolName: "get_weather",
+        output: { type: "text", value: "68F and sunny" },
+      })
+    }
   })
 })

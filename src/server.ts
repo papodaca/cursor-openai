@@ -1,7 +1,7 @@
 import type { AppConfig } from "./config.ts"
 import { requireProxyApiKey } from "./auth.ts"
 import type { AuthSession } from "./auth-session.ts"
-import { handleChatCompletion } from "./bridge.ts"
+import { handleChatCompletion, sessionHeadersFromRequest } from "./bridge.ts"
 import { getLanguageModel } from "./cursor.ts"
 import { ApiError, corsHeaders, errorResponse } from "./errors.ts"
 import { listModels } from "./models.ts"
@@ -45,6 +45,7 @@ export function createHandler(config: AppConfig, auth: AuthTokenSource) {
           model,
           request: parsed,
           abortSignal: req.signal,
+          headers: sessionHeadersFromRequest(req.headers),
         })
       }
 

@@ -1,9 +1,50 @@
 import { ApiError } from "../errors.ts"
 
-export type OpenAIChatMessage = {
-  role: "system" | "user" | "assistant"
-  content: string
+export type OpenAIToolCall = {
+  id: string
+  type: "function"
+  function: {
+    name: string
+    arguments: string
+  }
 }
+
+export type OpenAIChatMessage =
+  | {
+      role: "system"
+      content: string
+    }
+  | {
+      role: "user"
+      content: string
+    }
+  | {
+      role: "assistant"
+      content: string | null
+      tool_calls?: OpenAIToolCall[]
+    }
+  | {
+      role: "tool"
+      content: string
+      tool_call_id: string
+      name?: string
+    }
+
+export type OpenAIFunctionTool = {
+  type: "function"
+  function: {
+    name: string
+    description?: string
+    parameters?: Record<string, unknown>
+    strict?: boolean
+  }
+}
+
+export type OpenAIToolChoice =
+  | "none"
+  | "auto"
+  | "required"
+  | { type: "function"; function: { name: string } }
 
 export type OpenAIChatCompletionRequest = {
   model: string
@@ -12,6 +53,8 @@ export type OpenAIChatCompletionRequest = {
   temperature?: number
   maxOutputTokens?: number
   stopSequences?: string[]
+  tools?: OpenAIFunctionTool[]
+  toolChoice?: OpenAIToolChoice
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -37,7 +80,7 @@ function extractTextContent(content: unknown, role: string): string {
       continue
     }
     throw new ApiError(
-      `Unsupported content part type in role "${role}" (MVP is text-only).`,
+      `Unsupported content part type in role "${role}" (text-only content parts).`,
       400,
       "invalid_request_error",
       "unsupported_content",
@@ -46,14 +89,120 @@ function extractTextContent(content: unknown, role: string): string {
   return texts.join("")
 }
 
+function parseToolCall(raw: unknown): OpenAIToolCall {
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Each tool_call must be an object.", 400)
+  }
+  if (raw.type !== undefined && raw.type !== "function") {
+    throw new ApiError('tool_calls[].type must be "function".', 400)
+  }
+  if (typeof raw.id !== "string" || raw.id.trim() === "") {
+    throw new ApiError("tool_calls[].id is required.", 400)
+  }
+  if (!isPlainObject(raw.function)) {
+    throw new ApiError("tool_calls[].function is required.", 400)
+  }
+  const name = raw.function.name
+  if (typeof name !== "string" || name.trim() === "") {
+    throw new ApiError("tool_calls[].function.name is required.", 400)
+  }
+  const args = raw.function.arguments
+  if (args !== undefined && typeof args !== "string") {
+    throw new ApiError("tool_calls[].function.arguments must be a string.", 400)
+  }
+  return {
+    id: raw.id,
+    type: "function",
+    function: {
+      name: name.trim(),
+      arguments: typeof args === "string" ? args : "{}",
+    },
+  }
+}
+
+function parseTools(raw: unknown): OpenAIFunctionTool[] {
+  if (!Array.isArray(raw)) {
+    throw new ApiError("Field \"tools\" must be an array.", 400)
+  }
+  const tools: OpenAIFunctionTool[] = []
+  for (const item of raw) {
+    if (!isPlainObject(item)) {
+      throw new ApiError("Each tool must be an object.", 400)
+    }
+    if (item.type !== "function") {
+      throw new ApiError('tools[].type must be "function".', 400)
+    }
+    if (!isPlainObject(item.function)) {
+      throw new ApiError("tools[].function is required.", 400)
+    }
+    const name = item.function.name
+    if (typeof name !== "string" || name.trim() === "") {
+      throw new ApiError("tools[].function.name is required.", 400)
+    }
+    const description =
+      item.function.description === undefined
+        ? undefined
+        : typeof item.function.description === "string"
+          ? item.function.description
+          : (() => {
+              throw new ApiError("tools[].function.description must be a string.", 400)
+            })()
+    let parameters: Record<string, unknown> | undefined
+    if (item.function.parameters !== undefined) {
+      if (!isPlainObject(item.function.parameters)) {
+        throw new ApiError("tools[].function.parameters must be a JSON object (JSON Schema).", 400)
+      }
+      parameters = item.function.parameters
+    }
+    let strict: boolean | undefined
+    if (item.function.strict !== undefined) {
+      if (typeof item.function.strict !== "boolean") {
+        throw new ApiError("tools[].function.strict must be a boolean.", 400)
+      }
+      strict = item.function.strict
+    }
+    tools.push({
+      type: "function",
+      function: {
+        name: name.trim(),
+        description,
+        parameters,
+        strict,
+      },
+    })
+  }
+  return tools
+}
+
+function parseToolChoice(raw: unknown): OpenAIToolChoice {
+  if (raw === "none" || raw === "auto" || raw === "required") return raw
+  if (!isPlainObject(raw)) {
+    throw new ApiError(
+      'tool_choice must be "none", "auto", "required", or { type: "function", function: { name } }.',
+      400,
+    )
+  }
+  if (raw.type !== "function" || !isPlainObject(raw.function)) {
+    throw new ApiError(
+      'tool_choice object must be { type: "function", function: { name } }.',
+      400,
+    )
+  }
+  const name = raw.function.name
+  if (typeof name !== "string" || name.trim() === "") {
+    throw new ApiError("tool_choice.function.name is required.", 400)
+  }
+  return { type: "function", function: { name: name.trim() } }
+}
+
 export function parseChatCompletionRequest(body: unknown): OpenAIChatCompletionRequest {
   if (!isPlainObject(body)) {
     throw new ApiError("Request body must be a JSON object.", 400)
   }
 
-  if ("tools" in body || "functions" in body) {
+  if ("functions" in body) {
     throw new ApiError(
-      "Tool/function calling is not supported in this MVP. Send text-only chat completions.",
+      'Legacy "functions" is not supported. Use "tools" instead.',
       400,
       "invalid_request_error",
       "tools_not_supported",
@@ -62,16 +211,7 @@ export function parseChatCompletionRequest(body: unknown): OpenAIChatCompletionR
 
   if ("function_call" in body) {
     throw new ApiError(
-      "function_call is not supported in this MVP.",
-      400,
-      "invalid_request_error",
-      "tools_not_supported",
-    )
-  }
-
-  if ("tool_choice" in body && body.tool_choice !== undefined && body.tool_choice !== "none") {
-    throw new ApiError(
-      "tool_choice is not supported in this MVP (omit it or set to \"none\").",
+      'Legacy "function_call" is not supported. Use "tool_choice" instead.',
       400,
       "invalid_request_error",
       "tools_not_supported",
@@ -92,16 +232,73 @@ export function parseChatCompletionRequest(body: unknown): OpenAIChatCompletionR
       throw new ApiError("Each message must be an object.", 400)
     }
     const role = raw.role
-    if (role !== "system" && role !== "user" && role !== "assistant") {
-      throw new ApiError(
-        `Unsupported message role "${String(role)}" (MVP supports system, user, assistant).`,
-        400,
-      )
+
+    if (role === "system" || role === "user") {
+      messages.push({
+        role,
+        content: extractTextContent(raw.content, role),
+      })
+      continue
     }
-    messages.push({
-      role,
-      content: extractTextContent(raw.content, role),
-    })
+
+    if (role === "assistant") {
+      const toolCallsRaw = raw.tool_calls
+      const tool_calls =
+        toolCallsRaw === undefined
+          ? undefined
+          : Array.isArray(toolCallsRaw)
+            ? toolCallsRaw.map(parseToolCall)
+            : (() => {
+                throw new ApiError("assistant.tool_calls must be an array.", 400)
+              })()
+
+      let content: string | null = null
+      if (raw.content === null || raw.content === undefined) {
+        content = null
+      } else {
+        content = extractTextContent(raw.content, "assistant")
+      }
+
+      if ((content === null || content === "") && (!tool_calls || tool_calls.length === 0)) {
+        throw new ApiError(
+          "assistant messages require non-empty content and/or tool_calls.",
+          400,
+        )
+      }
+
+      messages.push({
+        role: "assistant",
+        content: content === "" ? null : content,
+        ...(tool_calls && tool_calls.length > 0 ? { tool_calls } : {}),
+      })
+      continue
+    }
+
+    if (role === "tool") {
+      if (typeof raw.tool_call_id !== "string" || raw.tool_call_id.trim() === "") {
+        throw new ApiError('tool messages require a non-empty "tool_call_id".', 400)
+      }
+      const name =
+        raw.name === undefined
+          ? undefined
+          : typeof raw.name === "string"
+            ? raw.name
+            : (() => {
+                throw new ApiError("tool.name must be a string.", 400)
+              })()
+      messages.push({
+        role: "tool",
+        content: extractTextContent(raw.content, "tool"),
+        tool_call_id: raw.tool_call_id,
+        ...(name ? { name } : {}),
+      })
+      continue
+    }
+
+    throw new ApiError(
+      `Unsupported message role "${String(role)}" (supported: system, user, assistant, tool).`,
+      400,
+    )
   }
 
   let temperature: number | undefined
@@ -132,6 +329,24 @@ export function parseChatCompletionRequest(body: unknown): OpenAIChatCompletionR
     }
   }
 
+  let tools: OpenAIFunctionTool[] | undefined
+  if (body.tools !== undefined) {
+    tools = parseTools(body.tools)
+    if (tools.length === 0) tools = undefined
+  }
+
+  let toolChoice: OpenAIToolChoice | undefined
+  if (body.tool_choice !== undefined) {
+    toolChoice = parseToolChoice(body.tool_choice)
+  }
+
+  if (toolChoice !== undefined && toolChoice !== "none" && !tools) {
+    throw new ApiError(
+      "tool_choice other than \"none\" requires a non-empty tools array.",
+      400,
+    )
+  }
+
   return {
     model: body.model.trim(),
     messages,
@@ -139,5 +354,7 @@ export function parseChatCompletionRequest(body: unknown): OpenAIChatCompletionR
     temperature,
     maxOutputTokens,
     stopSequences,
+    tools,
+    toolChoice,
   }
 }

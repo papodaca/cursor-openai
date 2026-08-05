@@ -2,7 +2,7 @@
 
 OpenAI-compatible HTTP API that talks to Cursor subscription models via [`cursor-opencode-provider`](https://www.npmjs.com/package/cursor-opencode-provider) (`LanguageModelV3` → Cursor Connect-RPC agent protocol).
 
-**MVP:** text chat completions only (no tools). Local / trusted-network use.
+**MVP + tools:** Chat completions with optional OpenAI-style tool pass-through (client executes tools). Local / trusted-network use.
 
 ## Requirements
 
@@ -75,7 +75,48 @@ Listens on `http://localhost:8787`.
 |--------|------|------|-------|
 | `GET` | `/health` | no | Liveness |
 | `GET` | `/v1/models` | Bearer proxy key | Allowlist → cache → fallback `composer-2.5` |
-| `POST` | `/v1/chat/completions` | Bearer proxy key | Stream + non-stream; text only |
+| `POST` | `/v1/chat/completions` | Bearer proxy key | Stream + non-stream; optional `tools` / `tool_choice` |
+
+## Tool calling
+
+Pass-through only: this server does **not** execute tools. The client supplies `tools`, receives `tool_calls`, runs the functions locally, then continues with `role: "tool"` messages.
+
+Requirements for multi-turn tool loops against a live Cursor Run:
+
+1. Echo `tool_call_id` values unchanged (ids look like `cursor_<sessionId>_<execId>`).
+2. Keep the server process up between the `tool_calls` response and the follow-up with results (held-open Runs are process-local).
+3. Optionally send a stable session header on every turn: `X-Session-Id`, `X-OpenCode-Session`, or `X-Conversation-Id`. The bridge forwards it as `x-opencode-session` for sticky conversation binding.
+
+Legacy OpenAI `functions` / `function_call` fields are rejected; use `tools` / `tool_choice`.
+
+Example (non-stream):
+
+```bash
+curl -s http://localhost:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PROXY_KEY" \
+  -H "X-Session-Id: demo-tool-loop" \
+  -d '{
+    "model": "composer-2.5",
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"]
+        }
+      }
+    }],
+    "messages": [{"role": "user", "content": "Weather in SF?"}]
+  }'
+```
+
+Then append the assistant `tool_calls` message and your `role: "tool"` result(s) and POST again with the same `X-Session-Id`.
+
+OpenAI JS SDK tool loop works with `baseURL=http://localhost:8787/v1` the same way as against OpenAI.
 
 ## Examples
 
@@ -111,6 +152,9 @@ import OpenAI from "openai"
 const client = new OpenAI({
   apiKey: process.env.PROXY_KEY, // proxy API key, not a Cursor sk-
   baseURL: "http://localhost:8787/v1",
+  defaultHeaders: {
+    "X-Session-Id": "demo-session",
+  },
 })
 
 const completion = await client.chat.completions.create({
