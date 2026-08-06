@@ -1,12 +1,12 @@
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import { parseChatCompletionRequest } from "./openai/request.ts"
-import { ApiError } from "./errors.ts"
+import { ApiError, mapProviderError } from "./errors.ts"
 import { requireProxyApiKey } from "./auth.ts"
 import { HelpRequested, loadConfig, parseArgs, resolveAuthPath } from "./config.ts"
 import type { AppConfig } from "./config.ts"
 import { createHandler } from "./server.ts"
-import { listModels } from "./models.ts"
+import { listModels, normalizeModelId } from "./models.ts"
 import {
   decodeJwtExpiryMs,
   parseAuthFile,
@@ -189,6 +189,36 @@ describe("auth file helpers", () => {
     const payload = Buffer.from(JSON.stringify({ exp: 1_700_000_000 })).toString("base64url")
     const jwt = `x.${payload}.y`
     expect(decodeJwtExpiryMs(jwt)).toBe(1_700_000_000_000)
+  })
+})
+
+describe("normalizeModelId", () => {
+  test("strips OpenCode-style cursor/ prefix", () => {
+    expect(normalizeModelId("cursor/composer-2.5")).toBe("composer-2.5")
+    expect(normalizeModelId("Cursor/composer-2.5")).toBe("composer-2.5")
+    expect(normalizeModelId("cursor:composer-2.5")).toBe("composer-2.5")
+    expect(normalizeModelId("composer-2.5")).toBe("composer-2.5")
+  })
+
+  test("maps auto and provider-prefixed ids", () => {
+    expect(normalizeModelId("auto")).toBe("default")
+    expect(normalizeModelId("AUTO")).toBe("default")
+    expect(normalizeModelId("cursor/auto")).toBe("default")
+    expect(normalizeModelId("cursor2/auto")).toBe("default")
+    expect(normalizeModelId("cursor2/composer-2.5")).toBe("composer-2.5")
+  })
+})
+
+describe("mapProviderError", () => {
+  test("maps Cursor not_found to model_not_found", () => {
+    const err = Object.assign(new Error("Cursor API error (code=not_found)"), {
+      name: "CursorServerError",
+      code: "not_found",
+    })
+    const mapped = mapProviderError(err)
+    expect(mapped).toBeInstanceOf(ApiError)
+    expect(mapped?.status).toBe(404)
+    expect(mapped?.code).toBe("model_not_found")
   })
 })
 

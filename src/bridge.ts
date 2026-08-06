@@ -22,7 +22,7 @@ import {
   mapUsage,
   sseData,
 } from "./openai/response.ts"
-import { corsHeaders } from "./errors.ts"
+import { ApiError, corsHeaders, mapProviderError } from "./errors.ts"
 
 function parseToolArguments(raw: string): unknown {
   const trimmed = raw.trim()
@@ -340,7 +340,21 @@ export async function handleChatCompletion(args: {
         controller.enqueue(encoder.encode("data: [DONE]\n\n"))
         controller.close()
       } catch (err) {
-        controller.error(err)
+        const mapped = mapProviderError(err) ?? err
+        const message = mapped instanceof Error ? mapped.message : String(mapped)
+        try {
+          enqueue({
+            error: {
+              message,
+              type: mapped instanceof ApiError ? mapped.type : "api_error",
+              code: mapped instanceof ApiError ? mapped.code : null,
+            },
+          })
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+          controller.close()
+        } catch {
+          controller.error(mapped instanceof Error ? mapped : new Error(message))
+        }
       }
     },
     cancel() {

@@ -4,7 +4,7 @@ import type { AuthSession } from "./auth-session.ts"
 import { handleChatCompletion, sessionHeadersFromRequest } from "./bridge.ts"
 import { getLanguageModel } from "./cursor.ts"
 import { ApiError, corsHeaders, errorResponse } from "./errors.ts"
-import { listModels } from "./models.ts"
+import { listModels, normalizeModelId } from "./models.ts"
 import { parseChatCompletionRequest } from "./openai/request.ts"
 
 export type AuthTokenSource = Pick<AuthSession, "getAccessToken">
@@ -39,11 +39,16 @@ export function createHandler(config: AppConfig, auth: AuthTokenSource) {
         }
 
         const parsed = parseChatCompletionRequest(json)
+        const modelId = normalizeModelId(parsed.model)
+        if (!modelId) {
+          throw new ApiError("model must be a non-empty string", 400)
+        }
+        const request = { ...parsed, model: modelId }
         const accessToken = await auth.getAccessToken()
-        const model = getLanguageModel(parsed.model, accessToken, config)
+        const model = getLanguageModel(modelId, accessToken, config)
         return await handleChatCompletion({
           model,
-          request: parsed,
+          request,
           abortSignal: req.signal,
           headers: sessionHeadersFromRequest(req.headers),
         })

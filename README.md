@@ -77,6 +77,40 @@ Listens on `http://localhost:8787`.
 | `GET` | `/v1/models` | Bearer proxy key | Allowlist → cache → fallback `composer-2.5` |
 | `POST` | `/v1/chat/completions` | Bearer proxy key | Stream + non-stream; optional `tools` / `tool_choice` |
 
+### Model ids
+
+Use bare Cursor ids from `GET /v1/models` (e.g. `composer-2.5`, `default`). Accepted aliases:
+
+- `auto` → `default` (Cursor’s auto-router; common OpenCode placeholder)
+- `cursor/<id>` / `cursor:<id>` / `<provider>/<id>` → `<id>`
+
+Unknown ids still yield Cursor `code=not_found` (mapped to HTTP 404 `model_not_found`).
+
+### OpenCode (`@ai-sdk/openai-compatible`)
+
+Point a custom provider at this proxy and list **real** Cursor model ids (or `auto`, which aliases to `default`):
+
+```jsonc
+{
+  "provider": {
+    "cursor2": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:8787/v1",
+        "apiKey": "your-proxy-api-key"
+      },
+      "models": {
+        "default": {},
+        "composer-2.5": {},
+        "auto": {}
+      }
+    }
+  }
+}
+```
+
+Select e.g. `cursor2/composer-2.5` or `cursor2/default` in the OpenCode UI. A lone `auto` model key works via the alias, but prefer listing ids from `GET /v1/models`.
+
 ## Tool calling
 
 Pass-through only: this server does **not** execute tools. The client supplies `tools`, receives `tool_calls`, runs the functions locally, then continues with `role: "tool"` messages.
@@ -153,9 +187,11 @@ const client = new OpenAI({
   apiKey: process.env.PROXY_KEY, // proxy API key, not a Cursor sk-
   baseURL: "http://localhost:8787/v1",
   defaultHeaders: {
+    // Optional sticky id for multi-turn tool loops / conversation binding
     "X-Session-Id": "demo-session",
   },
 })
+// model: "composer-2.5"  — not "cursor/composer-2.5" (prefix is stripped if present)
 
 const completion = await client.chat.completions.create({
   model: "composer-2.5",

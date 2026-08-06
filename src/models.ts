@@ -11,6 +11,31 @@ export type OpenAIModel = {
 
 const FALLBACK_MODELS = ["composer-2.5"]
 
+/**
+ * Normalize client model ids to Cursor wire ids.
+ * OpenCode-style `cursor/composer-2.5` (or `cursor:…`) is a common source of
+ * Cursor `code=not_found` when sent verbatim to the agent Run API.
+ * OpenCode openai-compatible configs often use a placeholder id `auto`;
+ * Cursor expects `default` for its auto-router.
+ */
+export function normalizeModelId(modelId: string): string {
+  let trimmed = modelId.trim()
+  const slash = /^cursor\//i.exec(trimmed)
+  if (slash) trimmed = trimmed.slice(slash[0].length).trim()
+  else {
+    const colon = /^cursor:/i.exec(trimmed)
+    if (colon) trimmed = trimmed.slice(colon[0].length).trim()
+  }
+  // OpenCode provider keys are not Cursor wire ids (e.g. cursor2/auto → auto).
+  const providerPrefixed = /^[a-z0-9_-]+\//i.exec(trimmed)
+  if (providerPrefixed && !trimmed.includes(" ")) {
+    const rest = trimmed.slice(providerPrefixed[0].length).trim()
+    if (rest) trimmed = rest
+  }
+  if (trimmed.toLowerCase() === "auto") return "default"
+  return trimmed
+}
+
 function toOpenAIModel(id: string, created = 0): OpenAIModel {
   return {
     id,
