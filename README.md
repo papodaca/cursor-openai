@@ -53,7 +53,7 @@ You can also point `--auth` at OpenCode's provider map (`~/.local/share/opencode
 | Flag / Variable | Description |
 |-----------------|-------------|
 | `--port` / `PORT` | Listen port (default `8787`) |
-| `--cache-dir` / `CURSOR_CACHE_DIR` | Host cache for `cursor-models.json` (default `~/.cache/opencode`) |
+| `--cache-dir` / `CURSOR_CACHE_DIR` | Host cache for `cursor-models.json` (default `~/.cache/opencode`; Docker `/data/cache`) |
 | `--workspace` / `CURSOR_WORKSPACE` | Optional workspace root passed to the provider |
 | `--api-base-url` / `CURSOR_API_BASE_URL` | Override Cursor API base |
 | `--agent-base-url` / `CURSOR_AGENT_BASE_URL` | Override Cursor agent Run host |
@@ -80,7 +80,7 @@ docker run --rm -p 8787:8787 \
   ghcr.io/papodaca/cursor-openai:latest
 ```
 
-Mount your Cursor oauth `auth.json` at `/data/auth.json` (the default `CURSOR_AUTH_FILE`). The container refreshes tokens and writes updates back to that file, so use a read-write mount. Cache lives under `/data/cache` (optional volume).
+Mount your Cursor oauth `auth.json` at `/data/auth.json` (the default `CURSOR_AUTH_FILE`). The container refreshes tokens and writes updates back to that file, so use a read-write mount. Model discovery writes `cursor-models.json` under `/data/cache` on first `GET /v1/models` (optional volume to keep it across restarts).
 
 Build locally instead of pulling:
 
@@ -97,7 +97,7 @@ docker run --rm -p 8787:8787 \
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET` | `/health` | no | Liveness |
-| `GET` | `/v1/models` | Bearer proxy key | Allowlist → cache → fallback `composer-2.5` |
+| `GET` | `/v1/models` | Bearer proxy key | Allowlist → Cursor AvailableModels (cached) → on-disk cache → fallback `composer-2.5` |
 | `POST` | `/v1/chat/completions` | Bearer proxy key | Stream + non-stream; optional `tools` / `tool_choice` |
 
 ### Model ids

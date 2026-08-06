@@ -231,7 +231,10 @@ describe("HTTP routes", () => {
   })
 
   test("GET /v1/models requires auth", async () => {
-    const handler = createHandler(baseConfig, authStub)
+    const handler = createHandler(
+      { ...baseConfig, modelsAllowlist: ["composer-2.5"] },
+      authStub,
+    )
     const unauth = await handler(new Request("http://localhost/v1/models"))
     expect(unauth.status).toBe(401)
 
@@ -241,8 +244,9 @@ describe("HTTP routes", () => {
       }),
     )
     expect(ok.status).toBe(200)
-    const body = (await ok.json()) as { object: string }
+    const body = (await ok.json()) as { object: string; data: Array<{ id: string }> }
     expect(body.object).toBe("list")
+    expect(body.data.map((m) => m.id)).toEqual(["composer-2.5"])
   })
 
   test("GET /v1/models fallback via listModels", async () => {
@@ -252,6 +256,36 @@ describe("HTTP routes", () => {
     })
     expect(data.object).toBe("list")
     expect(data.data.some((m) => m.id === "composer-2.5")).toBe(true)
+  })
+
+  test("listModels discovers via provider when cache is empty", async () => {
+    const data = await listModels(
+      {
+        ...baseConfig,
+        cacheDir: "/tmp/does-not-exist-cursor-openai-discover",
+      },
+      {
+        accessToken: "tok",
+        discover: async () => [{ id: "default" }, { id: "grok-4.5" }],
+      },
+    )
+    expect(data.data.map((m) => m.id)).toEqual(["default", "grok-4.5"])
+  })
+
+  test("listModels falls back when discover fails", async () => {
+    const data = await listModels(
+      {
+        ...baseConfig,
+        cacheDir: "/tmp/does-not-exist-cursor-openai-discover-fail",
+      },
+      {
+        accessToken: "tok",
+        discover: async () => {
+          throw new Error("network down")
+        },
+      },
+    )
+    expect(data.data.map((m) => m.id)).toEqual(["composer-2.5"])
   })
 
   test("POST rejects legacy functions with 400", async () => {

@@ -24,7 +24,8 @@ export function createHandler(config: AppConfig, auth: AuthTokenSource) {
 
       if (req.method === "GET" && url.pathname === "/v1/models") {
         requireProxyApiKey(req, config)
-        const body = await listModels(config)
+        const accessToken = await auth.getAccessToken()
+        const body = await listModels(config, { accessToken })
         return Response.json(body, { headers: corsHeaders() })
       }
 

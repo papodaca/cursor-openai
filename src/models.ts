@@ -1,4 +1,6 @@
 import path from "node:path"
+import { createRequire } from "node:module"
+import { pathToFileURL } from "node:url"
 import { readFile } from "node:fs/promises"
 import type { AppConfig } from "./config.ts"
 
@@ -10,6 +12,42 @@ export type OpenAIModel = {
 }
 
 const FALLBACK_MODELS = ["composer-2.5"]
+
+/** Subset of provider ModelInfo used for OpenAI listing. */
+export type DiscoverModelsFn = (
+  token: string,
+  cacheDir: string,
+  options?: { apiBaseURL?: string; baseURL?: string; timeoutMs?: number },
+) => Promise<Array<{ id: string }>>
+
+export type ListModelsOptions = {
+  accessToken?: string
+  /** Override for tests; defaults to provider discoverModels. */
+  discover?: DiscoverModelsFn
+}
+
+// Package exports omit models; resolve the dist file next to the installed package.
+const require = createRequire(import.meta.url)
+const providerModelsUrl = pathToFileURL(
+  path.join(
+    path.dirname(require.resolve("cursor-opencode-provider/package.json")),
+    "dist/models.js",
+  ),
+).href
+
+let cachedDiscover: DiscoverModelsFn | undefined
+
+async function defaultDiscover(
+  ...args: Parameters<DiscoverModelsFn>
+): ReturnType<DiscoverModelsFn> {
+  if (!cachedDiscover) {
+    const mod = (await import(providerModelsUrl)) as {
+      discoverModels: DiscoverModelsFn
+    }
+    cachedDiscover = mod.discoverModels
+  }
+  return cachedDiscover(...args)
+}
 
 /**
  * Normalize client model ids to Cursor wire ids.
@@ -65,7 +103,10 @@ async function readCachedModelIds(cacheDir: string): Promise<string[] | null> {
   }
 }
 
-export async function listModels(config: AppConfig): Promise<{
+export async function listModels(
+  config: AppConfig,
+  options: ListModelsOptions = {},
+): Promise<{
   object: "list"
   data: OpenAIModel[]
 }> {
@@ -76,9 +117,27 @@ export async function listModels(config: AppConfig): Promise<{
     }
   }
 
+  const created = Math.floor(Date.now() / 1000)
+  const discover = options.discover ?? defaultDiscover
+
+  if (options.accessToken) {
+    try {
+      const models = await discover(options.accessToken, config.cacheDir, {
+        apiBaseURL: config.apiBaseURL,
+      })
+      if (models.length > 0) {
+        return {
+          object: "list",
+          data: models.map((m) => toOpenAIModel(m.id, created)),
+        }
+      }
+    } catch {
+      // Fall through to on-disk cache / hardcoded fallback.
+    }
+  }
+
   const cached = await readCachedModelIds(config.cacheDir)
   if (cached) {
-    const created = Math.floor(Date.now() / 1000)
     return {
       object: "list",
       data: cached.map((id) => toOpenAIModel(id, created)),
