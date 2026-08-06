@@ -69,6 +69,29 @@ bun start --auth @auth.json --api-key "local-dev-secret"
 
 Listens on `http://localhost:8787`.
 
+### Docker
+
+Images are published to `ghcr.io/papodaca/cursor-openai` on pushes to `main` (`latest`) and on `v*` tags.
+
+```bash
+docker run --rm -p 8787:8787 \
+  -e API_KEY=local-dev-secret \
+  -v "$PWD/auth.json:/data/auth.json" \
+  ghcr.io/papodaca/cursor-openai:latest
+```
+
+Mount your Cursor oauth `auth.json` at `/data/auth.json` (the default `CURSOR_AUTH_FILE`). The container refreshes tokens and writes updates back to that file, so use a read-write mount. Cache lives under `/data/cache` (optional volume).
+
+Build locally instead of pulling:
+
+```bash
+docker build -t cursor-openai .
+docker run --rm -p 8787:8787 \
+  -e API_KEY=local-dev-secret \
+  -v "$PWD/auth.json:/data/auth.json" \
+  cursor-openai
+```
+
 ## Endpoints
 
 | Method | Path | Auth | Notes |
