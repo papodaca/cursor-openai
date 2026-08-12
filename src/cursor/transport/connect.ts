@@ -1,4 +1,11 @@
-import { CURSOR_API_HOST, CONNECT_PROTOCOL_VERSION, SERVER_CONFIG_PATH } from "../shared.js"
+import {
+  AVAILABLE_MODELS_PATH,
+  CONTENT_TYPE_CONNECT_PROTO,
+  CONNECT_PROTOCOL_VERSION,
+  CURSOR_API_HOST,
+  RUN_PATH,
+  SERVER_CONFIG_PATH,
+} from "../shared.js"
 import { encodeFrame, streamFrames } from "../protocol/framing.js"
 import { createCursorChecksumHeader } from "../protocol/checksum.js"
 import { getDeviceIds } from "../protocol/device-id.js"
@@ -89,7 +96,7 @@ export async function unaryAvailableModels(
   } = {},
 ): Promise<Record<string, unknown>> {
   const base = resolveApiBaseURL(options)
-  const url = `${base}/aiserver.v1.AiService/AvailableModels`
+  const url = `${base}${AVAILABLE_MODELS_PATH}`
   const timeoutMs = unaryTimeoutMs("AvailableModels", options.timeoutMs)
   return withUnaryDeadline(
     "AvailableModels",
@@ -376,16 +383,6 @@ function dropSession(origin: string, session: http2.ClientHttp2Session): void {
   if (_http2Sessions.get(origin) === session) _http2Sessions.delete(origin)
 }
 
-/** Test cleanup for local HTTP/2 fixtures; production sessions stay process-cached. */
-export function closeCachedHttp2SessionsForTests(): void {
-  for (const session of _http2Sessions.values()) {
-    _http2SessionListenerCleanup.get(session)?.()
-    try { session.destroy() } catch { /* already closed */ }
-  }
-  _http2Sessions.clear()
-  _http2Connecting.clear()
-}
-
 function timeoutMs(name: string, value: number | undefined, fallback: number): number {
   const resolved = value ?? fallback
   if (!Number.isSafeInteger(resolved) || resolved <= 0 || resolved > MAX_TIMER_MS) {
@@ -464,14 +461,6 @@ function installSessionInvalidation(
     }
   }
   _http2SessionListenerCleanup.set(session, cleanup)
-}
-
-/** Node-runtime regression hook; production callers use getSession(). */
-export function installSessionInvalidationForTests(
-  origin: string,
-  session: http2.ClientHttp2Session,
-): void {
-  installSessionInvalidation(origin, session)
 }
 
 function invalidateSession(origin: string, session: http2.ClientHttp2Session): void {
@@ -635,8 +624,8 @@ export async function bidiRunStream(
   const headers = {
     ...buildBaseHeaders(token, clientVersion, options.headers),
     ":method": "POST",
-    ":path": "/agent.v1.AgentService/Run",
-    "content-type": "application/connect+proto",
+    ":path": RUN_PATH,
+    "content-type": CONTENT_TYPE_CONNECT_PROTO,
     "connect-accept-encoding": "gzip,br",
     // The CLI's streaming interceptor sets this on the bidi Run stream
     // (decompiled client.ts:1190). Without it Cursor may treat the stream as
@@ -1022,10 +1011,6 @@ function mergeBuffers(buffers: Uint8Array[]): Uint8Array {
     offset += b.length
   }
   return merged
-}
-
-export function makeRequestId(): string {
-  return crypto.randomUUID()
 }
 
 function stripPseudo(h: Record<string, unknown>): Record<string, unknown> {

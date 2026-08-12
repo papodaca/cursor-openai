@@ -1,7 +1,6 @@
 import { gunzipSync, gzipSync } from "node:zlib"
 
 export const FLAG_GZIP = 0x01
-export const FLAG_END_STREAM = 0x02
 
 export type Frame = {
   flags: number

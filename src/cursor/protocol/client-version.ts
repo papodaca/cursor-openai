@@ -17,10 +17,6 @@ type VersionCache = { version: string; fetchedAt: number }
 
 let cachedResolution: Promise<string> | undefined
 
-export function resetClientVersionCache(): void {
-  cachedResolution = undefined
-}
-
 /**
  * Resolve the Cursor client version for the wire handshake. `cacheDir` is the
  * proxy's own cache root (model/version caches) — never a client path.

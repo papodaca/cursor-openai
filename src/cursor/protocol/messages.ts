@@ -1710,22 +1710,3 @@ export function debugWalkTurnEnded(payload: Uint8Array): string {
     return `(walk failed: ${(e as Error).message})`
   }
 }
-
-/**
- * Decode a protobuf sub-message from a frame payload that wraps it in
- * a top-level field key + length varint.  Skips the outer wrapper and
- * decodes the inner body as `typeName`.
- */
-export function decodeWrappedMessage<T = Record<string, unknown>>(
-  typeName: string,
-  data: Uint8Array,
-): T {
-  let offset = 1 // skip field key
-  // skip varint length
-  while (offset < data.length) {
-    const b = data[offset]!
-    offset++
-    if (!(b & 0x80)) break
-  }
-  return decodeMessage<T>(typeName, data.subarray(offset))
-}
