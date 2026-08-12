@@ -1,8 +1,10 @@
 # cursor-openai
 
-OpenAI-compatible HTTP API that talks to Cursor subscription models via [`cursor-opencode-provider`](https://www.npmjs.com/package/cursor-opencode-provider) (`LanguageModelV3` → Cursor Connect-RPC agent protocol).
+OpenAI-compatible HTTP API that talks to Cursor subscription models via a vendored Connect-RPC/protobuf agent protocol (`src/cursor/`, `LanguageModelV3` → Cursor agent API).
 
 **MVP + tools:** Chat completions with optional OpenAI-style tool pass-through (client executes tools). Local / trusted-network use.
+
+The Cursor protocol translator is vendored under `src/cursor/` (MIT, © Oleksiy Akimov — see `src/cursor/NOTICE.md`). It is transport/translation only: no workspace model, no `request_context` injection, no host-side tool execution.
 
 ## Requirements
 
@@ -54,7 +56,6 @@ You can also point `--auth` at OpenCode's provider map (`~/.local/share/opencode
 |-----------------|-------------|
 | `--port` / `PORT` | Listen port (default `8787`) |
 | `--cache-dir` / `CURSOR_CACHE_DIR` | Host cache for `cursor-models.json` (default `~/.cache/opencode`; Docker `/data/cache`) |
-| `--workspace` / `CURSOR_WORKSPACE` | Optional workspace root passed to the provider |
 | `--api-base-url` / `CURSOR_API_BASE_URL` | Override Cursor API base |
 | `--agent-base-url` / `CURSOR_AGENT_BASE_URL` | Override Cursor agent Run host |
 | `CURSOR_MODELS` | Comma-separated model ids for `GET /v1/models` |
@@ -136,7 +137,7 @@ Select e.g. `cursor2/composer-2.5` or `cursor2/default` in the OpenCode UI. A lo
 
 ## Tool calling
 
-Pass-through only: this server does **not** execute tools. The client supplies `tools`, receives `tool_calls`, runs the functions locally, then continues with `role: "tool"` messages.
+Pass-through only: this server does **not** execute tools. The client supplies `tools`, receives `tool_calls`, runs the functions locally, then continues with `role: "tool"` messages. Cursor-native execs (read/shell/edit/…) are emitted as ordinary tool calls the same way — there is no proxy-local filesystem handling and no typed missing-read rejection.
 
 Requirements for multi-turn tool loops against a live Cursor Run:
 
@@ -224,4 +225,15 @@ const completion = await client.chat.completions.create({
 
 ## Layout
 
-See [docs/plans/](./docs/plans/) for the implementation plan. Runtime code lives under `src/`. The `./cursor-opencode-provider` tree is a local reference clone only — the app depends on the npm package.
+```
+src/
+  server.ts / bridge.ts / openai/   # OpenAI HTTP surface (unchanged by Phase 4)
+  cursor.ts / models.ts / config.ts # factory, discovery, CLI
+  cursor/                           # vendored Cursor protocol translator (MIT)
+    NOTICE.md                       # upstream tag/commit + license + sync rule
+    language-model.ts               # LanguageModelV3 → Connect-RPC Run
+    protocol/ transport/ …          # framing, mapping, held-Run sessions
+docs/plans/                         # implementation plans (00–04)
+```
+
+See [docs/plans/](./docs/plans/) for the plan history. An optional local `./cursor-opencode-provider` clone is reference-only and is **not** a runtime dependency.

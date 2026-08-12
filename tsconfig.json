@@ -28,5 +28,5 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["index.ts", "src/**/*.ts"],
-  "exclude": ["cursor-opencode-provider", "node_modules"]
+  "exclude": ["cursor-opencode-provider", "node_modules", "src/**/__tests__/**", "**/*.test.ts"]
 }

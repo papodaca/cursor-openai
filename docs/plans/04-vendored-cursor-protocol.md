@@ -1,6 +1,6 @@
 # Phase 4: Vendor the Cursor protocol — drop `cursor-opencode-provider`
 
-**Status:** drafted
+**Status:** implemented (Phases A–C complete; live Phase B verified 2026-08-11)
 **Date:** 2026-08-11
 **Supersedes:** the "Cursor integration" decision in [00-overview.md](./00-overview.md) (reuse npm package → vendor in repo)
 
@@ -153,13 +153,13 @@ OpenAI client → src/server.ts → src/bridge.ts → LanguageModelV3 (src/curso
 4. Confirm Cursor tooling still functions when native read/shell execs arrive as pass-through tool calls (OpenCode has read/shell tools); log if the model stalls without typed read rejections.
 5. Idle-held-Run hygiene: confirm heartbeat/idle timeouts reap sessions (port `session.test.ts` coverage; manual soak optional).
 
-**Exit criteria:** items 1–3 work; item 4 documented either way.
+**Exit criteria:** items 1–3 work; item 4 documented either way. _(Live-verified 2026-08-11: `/v1/models`, OpenCode chat, parallel tool calls, concurrent sessions OK; native read/shell/edit pass-through functioned without typed missing-read rejections.)_
 
 ### Phase C — docs & upstream tracking
 
-1. README: layout section (vendored `src/cursor/`), remove `--workspace` docs, note MIT vendored attribution, update tool-calling section (native execs are pure pass-through now; typed missing-read rejections removed).
-2. `docs/plans/00-overview.md`: mark superseded decision, note Phase 4.
-3. Forward-sync rule: on new upstream tags, review the tag diff against `src/cursor/` using the intake verdicts as the template — protocol/message/session/tools fixes apply; host-chrome (plugin, pricing, metadata, workspace/session tracking) does not. Record the synced upstream tag in `src/cursor/NOTICE.md` each time.
+1. ✅ README: layout section (vendored `src/cursor/`), remove `--workspace` docs, note MIT vendored attribution, update tool-calling section (native execs are pure pass-through now; typed missing-read rejections removed).
+2. ✅ `docs/plans/00-overview.md`: mark superseded decision, note Phase 4.
+3. ✅ Forward-sync rule: documented in `src/cursor/NOTICE.md` — on new upstream tags, review the tag diff against `src/cursor/` using the intake verdicts as the template — protocol/message/session/tools fixes apply; host-chrome (plugin, pricing, metadata, workspace/session tracking) does not. Record the synced upstream tag in `src/cursor/NOTICE.md` each time.
 
 ## Behavioral deltas vs today
 

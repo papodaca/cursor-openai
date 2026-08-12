@@ -1,7 +1,8 @@
 # Overview: OpenAI-compatible API over Cursor
 
-**Status:** drafted  
-**Date:** 2026-07-26
+**Status:** drafted (Phase 4 complete — see [04](./04-vendored-cursor-protocol.md))  
+**Date:** 2026-07-26  
+**Updated:** 2026-08-11
 
 ## Goal
 
@@ -13,7 +14,7 @@ Run a local (or self-hosted) **OpenAI-compatible HTTP API** that translates Chat
 |----------|--------|
 | Primary clients | Any OpenAI-compatible client (curl, OpenAI SDK, Continue, Cline, LiteLLM, etc.) |
 | MVP tools | Chat/text first; OpenAI tool pass-through in phase 2+ ([03](./03-future-tool-calling.md)) |
-| Cursor integration | ~~Reuse npm package `cursor-opencode-provider` via `createCursor()`~~ superseded: vendored protocol in-repo ([04](./04-vendored-cursor-protocol.md)) |
+| Cursor integration | ~~Reuse npm package `cursor-opencode-provider` via `createCursor()`~~ **superseded:** vendored protocol in-repo (`src/cursor/`) — transport/translation only, zero context injection ([04](./04-vendored-cursor-protocol.md)) |
 | Local clone | `./cursor-opencode-provider` is **reference only**, not a runtime dependency |
 | Runtime | Bun (`Bun.serve`) |
 
@@ -21,10 +22,10 @@ Run a local (or self-hosted) **OpenAI-compatible HTTP API** that translates Chat
 
 Vercel’s **AI SDK** defines a provider contract (`@ai-sdk/provider`): a language model exposes `doGenerate` / `doStream` with a shared prompt format.
 
-`cursor-opencode-provider` implements that contract and speaks Cursor’s Connect-RPC/protobuf agent protocol underneath. It is **not** an OpenAI HTTP server.
+This repo vendors a Connect-RPC/protobuf agent protocol translator under `src/cursor/` that implements that contract. The OpenAI HTTP server (`src/bridge.ts`) stays unchanged and calls `doStream` / `doGenerate` directly.
 
 ```
-OpenAI client  →  this project (HTTP)  →  LanguageModelV3 (createCursor)  →  Cursor agent API
+OpenAI client  →  this project (HTTP)  →  LanguageModelV3 (src/cursor/)  →  Cursor agent API
 ```
 
 ## Architecture
@@ -33,13 +34,15 @@ OpenAI client  →  this project (HTTP)  →  LanguageModelV3 (createCursor)  �
 flowchart LR
   Client["OpenAI client\n/v1/chat/completions"]
   Server["cursor-openai\nBun HTTP server"]
-  Provider["cursor-opencode-provider\ncreateCursor().languageModel()"]
+  Vendor["src/cursor/\nvendored LanguageModelV3"]
   Cursor["Cursor agent API\nConnect-RPC / HTTP2"]
 
   Client -->|"JSON / SSE"| Server
-  Server -->|"LanguageModelV3\ndoStream / doGenerate"| Provider
-  Provider --> Cursor
+  Server -->|"doStream / doGenerate"| Vendor
+  Vendor --> Cursor
 ```
+
+Proxy owns transport + message/stream translation only. System prompt, workspace/context, and tool execution are always caller-owned (client request / client-side tools).
 
 ## Plan index
 
@@ -52,15 +55,15 @@ flowchart LR
 
 ## Non-goals (near term)
 
-- Reimplementing Cursor protobuf framing (use the npm package)
 - OpenCode plugin packaging for this repo
 - Embeddings, images, Assistants API
-- Full OAuth browser login UI in this repo (reuse keys / tokens the provider already accepts)
-- Executing Cursor-native filesystem/shell tools locally
+- Full OAuth browser login UI in this repo (reuse keys / tokens already obtained via OpenCode / upstream login)
+- Executing Cursor-native filesystem/shell tools on the proxy host (pass-through to the client only)
+- Any proxy-owned workspace / `request_context` injection (see [04](./04-vendored-cursor-protocol.md))
 
 ## Risks
 
-- **Private protocol / ToS** — same personal-use caveats as `cursor-opencode-provider`; Cursor may change or restrict the API.
-- **Model discovery not exported** — package root exposes `createCursor` + plugin, not AvailableModels; MVP uses cache/allowlist.
-- **AI SDK version skew** — provider pins `LanguageModelV3` (`@ai-sdk/provider` 3.x); call `doStream`/`doGenerate` directly to avoid `ai` package V4 mismatch.
-- **HTTP/2** — provider requires a runtime where Node/Bun HTTP2 against Cursor works.
+- **Private protocol / ToS** — same personal-use caveats as the upstream Cursor provider ecosystem; Cursor may change or restrict the API.
+- **Vendored protocol maintenance** — ~8–9k LOC under `src/cursor/`; re-vendor against newer upstream tags via the forward-sync rule in `src/cursor/NOTICE.md`.
+- **AI SDK type drift** — vendored V3-spec code compiles against `@ai-sdk/provider` V3 type aliases; bump the pin deliberately with typecheck as the gate.
+- **HTTP/2** — requires a runtime where Node/Bun HTTP2 against Cursor works.

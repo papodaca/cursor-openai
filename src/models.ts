@@ -1,7 +1,6 @@
 import path from "node:path"
-import { createRequire } from "node:module"
-import { pathToFileURL } from "node:url"
 import { readFile } from "node:fs/promises"
+import { discoverModels } from "./cursor/models.ts"
 import type { AppConfig } from "./config.ts"
 
 export type OpenAIModel = {
@@ -22,32 +21,11 @@ export type DiscoverModelsFn = (
 
 export type ListModelsOptions = {
   accessToken?: string
-  /** Override for tests; defaults to provider discoverModels. */
+  /** Override for tests; defaults to vendored discoverModels. */
   discover?: DiscoverModelsFn
 }
 
-// Package exports omit models; resolve the dist file next to the installed package.
-const require = createRequire(import.meta.url)
-const providerModelsUrl = pathToFileURL(
-  path.join(
-    path.dirname(require.resolve("cursor-opencode-provider/package.json")),
-    "dist/models.js",
-  ),
-).href
-
-let cachedDiscover: DiscoverModelsFn | undefined
-
-async function defaultDiscover(
-  ...args: Parameters<DiscoverModelsFn>
-): ReturnType<DiscoverModelsFn> {
-  if (!cachedDiscover) {
-    const mod = (await import(providerModelsUrl)) as {
-      discoverModels: DiscoverModelsFn
-    }
-    cachedDiscover = mod.discoverModels
-  }
-  return cachedDiscover(...args)
-}
+const defaultDiscover: DiscoverModelsFn = discoverModels
 
 /**
  * Normalize client model ids to Cursor wire ids.

@@ -1,8 +1,7 @@
-import { createCursor } from "cursor-opencode-provider"
+import { createCursor } from "./cursor/index.ts"
+import type { CursorFactory } from "./cursor/index.ts"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import type { AppConfig } from "./config.ts"
-
-type CursorFactory = ReturnType<typeof createCursor>
 
 let cached: {
   accessToken: string
@@ -14,7 +13,6 @@ function factoryCacheKey(accessToken: string, config: AppConfig): string {
   return [
     accessToken,
     config.cacheDir,
-    config.workspaceRoot ?? "",
     config.apiBaseURL,
     config.agentBaseURL ?? "",
   ].join("\0")
@@ -29,7 +27,6 @@ export function getCursor(accessToken: string, config: AppConfig): CursorFactory
     name: "cursor",
     accessToken,
     cacheDir: config.cacheDir,
-    workspaceRoot: config.workspaceRoot,
     apiBaseURL: config.apiBaseURL,
     agentBaseURL: config.agentBaseURL,
   })

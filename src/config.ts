@@ -8,7 +8,6 @@ export type AppConfig = {
   /** Path to Cursor oauth auth.json (refresh/access/expires). */
   authPath: string
   cacheDir: string
-  workspaceRoot?: string
   apiBaseURL: string
   agentBaseURL?: string
   modelsAllowlist?: string[]
@@ -19,7 +18,6 @@ export type CliOptions = {
   proxyApiKey: string
   port?: number
   cacheDir?: string
-  workspaceRoot?: string
   apiBaseURL?: string
   agentBaseURL?: string
   modelsAllowlist?: string[]
@@ -59,7 +57,6 @@ export function parseArgs(argv: string[]): CliOptions {
   let proxyApiKey: string | undefined
   let port: number | undefined
   let cacheDir: string | undefined
-  let workspaceRoot: string | undefined
   let apiBaseURL: string | undefined
   let agentBaseURL: string | undefined
 
@@ -85,9 +82,6 @@ export function parseArgs(argv: string[]): CliOptions {
         break
       case "--cache-dir":
         cacheDir = next()
-        break
-      case "--workspace":
-        workspaceRoot = next()
         break
       case "--api-base-url":
         apiBaseURL = next()
@@ -125,7 +119,6 @@ export function parseArgs(argv: string[]): CliOptions {
     proxyApiKey,
     port,
     cacheDir,
-    workspaceRoot,
     apiBaseURL,
     agentBaseURL,
     modelsAllowlist,
@@ -151,7 +144,6 @@ Options:
   --api-key <key>         Proxy API key required on client requests
   --port <n>              Listen port (default PORT env or 8787)
   --cache-dir <path>      Model cache directory
-  --workspace <path>      Optional workspace root for Cursor context
   --api-base-url <url>    Cursor API base (default https://api2.cursor.sh)
   --agent-base-url <url>  Cursor agent Run host override
 `
@@ -169,7 +161,6 @@ export function loadConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.env
     proxyApiKey: cli.proxyApiKey,
     authPath: cli.authPath,
     cacheDir: cli.cacheDir ?? optionalEnv("CURSOR_CACHE_DIR") ?? defaultCacheDir(),
-    workspaceRoot: cli.workspaceRoot ?? optionalEnv("CURSOR_WORKSPACE"),
     apiBaseURL:
       cli.apiBaseURL ??
       optionalEnv("CURSOR_API_BASE_URL") ??

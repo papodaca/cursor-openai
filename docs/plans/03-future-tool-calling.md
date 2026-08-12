@@ -1,9 +1,9 @@
 # Phase 2+: OpenAI tool calling (post-MVP)
 
-**Status:** implemented (unit/mock covered; live Cursor tool loop optional smoke)  
+**Status:** implemented (unit/mock covered; live Cursor tool loop verified)  
 **Depends on:** [01-mvp-openai-bridge.md](./01-mvp-openai-bridge.md)  
 **Date:** 2026-07-26  
-**Updated:** 2026-08-05
+**Updated:** 2026-08-11 (Phase 4: guidance/injection answers below are historical — see [04](./04-vendored-cursor-protocol.md))
 
 ## Objective
 
@@ -32,9 +32,9 @@ After text-only chat works, support OpenAI-style function/tool calling as **pass
 
 ### 1. OpenCode system guidance with arbitrary OpenAI tools?
 
-**Answer:** Yes, the provider still calls `buildOpenCodeInteractionGuidance` whenever the advertised tool list is non-empty. Guidance always includes: the exact executable tool list for the turn, workspace-root grounding, “call only listed tools,” and “emit the actual tool call.” Named redirects (question / todowrite / custom_websearch / write / edit / …) fire **only** when those OpenCode tool names are present.
+**Answer (historical, pre–Phase 4):** Yes, the npm provider called `buildOpenCodeInteractionGuidance` whenever the advertised tool list was non-empty (executable tool list, workspace-root grounding, “call only listed tools,” named redirects when OpenCode tool names were present).
 
-For typical OpenAI clients advertising only custom functions (e.g. `get_weather`), the model sees the generic list/workspace lines plus those custom names — not OpenCode agent chrome. That is acceptable for pass-through; clients should not advertise OpenCode-native names unless they implement them.
+**Superseded by [04](./04-vendored-cursor-protocol.md):** the vendored translator appends **no** interaction guidance and injects **no** workspace/`request_context`. The system prompt is the client’s verbatim input; native Cursor execs pass through as ordinary tool calls for the client to execute.
 
 ### 2. Held-open Run / session across separate HTTP requests?
 
@@ -51,7 +51,7 @@ Documented in README under tool calling.
 
 ### 3. Auto-reject unknown Cursor exec so the model falls back to client tools?
 
-**Answer:** Out of scope for this bridge. The provider already advertises only the tools we pass, injects “call only tools in that exact list,” and fails unsupported/unknown Cursor exec variants explicitly rather than inventing replies. Declining native UI interactions is provider-owned. We do not add extra rejection logic here.
+**Answer (updated Phase 4):** Out of scope / deliberately absent. Native Cursor execs (read/shell/edit/…) are pure pass-through tool calls; the proxy does not invent typed missing-read rejections or execute anything on the proxy host. Unsupported variants fail at the protocol mapper rather than inventing replies. Clients that need filesystem tools must advertise and implement them.
 
 ## Acceptance criteria
 
