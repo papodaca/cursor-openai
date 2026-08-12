@@ -1,6 +1,7 @@
 import path from "node:path"
 import { readFile } from "node:fs/promises"
 import { discoverModels } from "./cursor/models.ts"
+import type { BackendLLM } from "./cursor.ts"
 import type { AppConfig } from "./config.ts"
 
 export type OpenAIModel = {
@@ -21,6 +22,8 @@ export type DiscoverModelsFn = (
 
 export type ListModelsOptions = {
   accessToken?: string
+  /** Preferred: list via the Cursor backend adapter. */
+  backend?: Pick<BackendLLM, "listModels">
   /** Override for tests; defaults to vendored discoverModels. */
   discover?: DiscoverModelsFn
 }
@@ -98,11 +101,13 @@ export async function listModels(
   const created = Math.floor(Date.now() / 1000)
   const discover = options.discover ?? defaultDiscover
 
-  if (options.accessToken) {
+  if (options.backend || options.accessToken) {
     try {
-      const models = await discover(options.accessToken, config.cacheDir, {
-        apiBaseURL: config.apiBaseURL,
-      })
+      const models = options.backend
+        ? await options.backend.listModels()
+        : await discover(options.accessToken!, config.cacheDir, {
+            apiBaseURL: config.apiBaseURL,
+          })
       if (models.length > 0) {
         return {
           object: "list",

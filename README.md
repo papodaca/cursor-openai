@@ -1,10 +1,10 @@
 # cursor-openai
 
-OpenAI-compatible HTTP API that talks to Cursor subscription models via a vendored Connect-RPC/protobuf agent protocol (`src/cursor/`, `LanguageModelV3` → Cursor agent API).
+OpenAI-compatible HTTP API that talks to Cursor subscription models via `src/cursor` (BackendLLM + vendored Connect-RPC/protobuf protocol keep-set).
 
 **MVP + tools:** Chat completions with optional OpenAI-style tool pass-through (client executes tools). Local / trusted-network use.
 
-The Cursor protocol translator is vendored under `src/cursor/` (MIT, © Oleksiy Akimov — see `src/cursor/NOTICE.md`). It is transport/translation only: no workspace model, no `request_context` injection, no host-side tool execution.
+The Cursor protocol translator lives under `src/cursor/` (MIT, © Oleksiy Akimov — see `src/cursor/NOTICE.md`). It is transport/translation only: no workspace model, no `request_context` injection, no host-side tool execution.
 
 ## Requirements
 
@@ -227,13 +227,14 @@ const completion = await client.chat.completions.create({
 
 ```
 src/
-  server.ts / bridge.ts / openai/   # OpenAI HTTP surface (unchanged by Phase 4)
-  cursor.ts / models.ts / config.ts # factory, discovery, CLI
-  cursor/                           # vendored Cursor protocol translator (MIT)
+  server.ts / bridge.ts / openai/   # OpenAI HTTP surface
+  cursor/                           # Cursor BackendLLM + vendored protocol keep-set
     NOTICE.md                       # upstream tag/commit + license + sync rule
-    language-model.ts               # LanguageModelV3 → Connect-RPC Run
     protocol/ transport/ …          # framing, mapping, held-Run sessions
+  cursor.ts / models.ts / config.ts # factory wiring (BackendLLM types), discovery, CLI
 docs/plans/                         # implementation plans (00–04)
 ```
+
+The HTTP server talks to Cursor through `src/cursor` (BackendLLM + protocol keep-set) — not used as an OpenCode host plugin.
 
 See [docs/plans/](./docs/plans/) for the plan history. An optional local `./cursor-opencode-provider` clone is reference-only and is **not** a runtime dependency.

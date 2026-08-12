@@ -2,34 +2,13 @@ import { encodeMessage } from "./messages.js"
 import { encodeJsonAsValue, decodeStructEntriesToJson, readAllFields } from "./struct.js"
 import { trace, traceRequestContextPaths } from "../debug.js"
 import { cursorExecVariantByRequestName } from "./exec-variants.js"
-import {
-  BACKGROUND_SHELL_MARKER,
-  buildBackgroundShellCommand,
-  type CursorShellOutcome,
-} from "../shell-timeout.js"
 
-// ── opencode tool definitions → Cursor request_context descriptors ──
+// ── host tool definitions → Cursor request_context descriptors ──
 
 export type OpencodeToolDef = {
   name: string
   description?: string
   inputSchema?: unknown
-  /** Original flattened identity when `name` is a Cursor-facing alias. */
-  sourceName?: string
-}
-
-export const CUSTOM_WEBSEARCH_TOOL = "custom_websearch"
-export const CUSTOM_WEBFETCH_TOOL = "custom_webfetch"
-export const CUSTOM_LIST_MCP_RESOURCES_TOOL = "custom_list_mcp_resources"
-export const CUSTOM_READ_MCP_RESOURCE_TOOL = "custom_read_mcp_resource"
-
-/** Cursor-facing alias → exact host tool name accepted by the AI SDK call. */
-export type ToolAliasRegistry = ReadonlyMap<string, string>
-
-export type AliasedToolCatalog = {
-  advertisedTools: OpencodeToolDef[]
-  aliases: ToolAliasRegistry
-  ambiguous: ReadonlyMap<string, string[]>
 }
 
 export type ToolServerIdentity = {
@@ -37,7 +16,7 @@ export type ToolServerIdentity = {
   server: string
   /** Bare tool name inside that server (Cursor McpArgs.tool_name). */
   toolName: string
-  /** Full OpenCode tool id used for local execution (e.g. github_create_pull_request). */
+  /** Full host tool id used for local execution (e.g. github_create_pull_request). */
   opencodeName: string
 }
 
@@ -47,7 +26,7 @@ export function sanitizeMcpServerId(value: string): string {
 }
 
 /**
- * Resolve an OpenCode tool id using known MCP server ids from merged config.
+ * Resolve a host tool id using known MCP server ids from merged config.
  * Unknown names remain under the synthetic default server: a flattened tool
  * name alone cannot distinguish plugin/custom tools from `<server>_<tool>`.
  */
@@ -77,13 +56,13 @@ export function resolveToolServerIdentity(
 }
 
 /**
- * Convert opencode's per-turn tool list into Cursor `McpToolDefinition`
- * entries for `request_context.tools` (#7) and `AgentRunRequest.mcp_tools`.
+ * Convert the per-turn tool list into Cursor `McpToolDefinition` entries for
+ * `request_context.tools` (#7) and `AgentRunRequest.mcp_tools`.
  *
  * Builtins and unknown plugin/custom tools are advertised under the synthetic
  * default server (`opencode`). Tools whose prefixes match configured MCP
  * servers keep those server ids (`github`, …). Composite `name` is
- * `<server>-<bareTool>`; local execution still uses the full OpenCode id
+ * `<server>-<bareTool>`; local execution still uses the full host id
  * reconstructed in `mcpRealToolName`.
  */
 export function toolsToDescriptors(
@@ -92,20 +71,30 @@ export function toolsToDescriptors(
   knownMcpServers: Iterable<string> = [],
 ): Array<Record<string, unknown>> {
   return tools.map((t) => {
-    const id = resolveToolServerIdentity(t.sourceName ?? t.name, providerIdentifier, knownMcpServers)
-    const collisionSafeAlias = COLLISION_SAFE_ALIASES.has(t.name)
+    const id = resolveToolServerIdentity(t.name, providerIdentifier, knownMcpServers)
     return {
-      // Keep the collision-safe public name exact. Prefixing it with the
-      // synthetic default server weakens the distinction from Cursor-native
-      // capabilities (web search/fetch, MCP resource list/read) in the
-      // model-visible catalog.
-      name: collisionSafeAlias ? t.name : `${id.server}-${id.toolName}`,
+      name: `${id.server}-${id.toolName}`,
       description: t.description ?? "",
       input_schema: encodeJsonAsValue(normalizeInputSchema(t.inputSchema)),
       provider_identifier: id.server,
-      tool_name: t.sourceName ? t.name : id.toolName,
+      tool_name: id.toolName,
     }
   })
+}
+
+/** Advertised host tool ids from Cursor McpToolDefinition descriptors. */
+export function advertisedToolNamesFromDescriptors(
+  descriptors: Array<Record<string, unknown>>,
+): string[] {
+  const out: string[] = []
+  for (const d of descriptors) {
+    const toolName = typeof d.tool_name === "string" ? d.tool_name : undefined
+    const provider = typeof d.provider_identifier === "string" ? d.provider_identifier : "opencode"
+    if (!toolName) continue
+    if (provider && provider !== "opencode") out.push(`${provider}_${toolName}`)
+    else out.push(toolName)
+  }
+  return out
 }
 
 function normalizeInputSchema(schema: unknown): Record<string, unknown> {
@@ -115,114 +104,35 @@ function normalizeInputSchema(schema: unknown): Record<string, unknown> {
   return { type: "object", properties: {} }
 }
 
-type WebAliasRule = {
-  alias: string
-  exact: readonly string[]
-  suffixes: readonly string[]
-}
-
-// Despite the name, these rules cover any advertised OpenCode tool whose bare
-// name collides with a Cursor-native capability, not only web search/fetch —
-// see the MCP resource entries below and
-// tasks/plans/fix-cursor-mcp-resource-exec.md Phase 0/2.
-const WEB_ALIAS_RULES: readonly WebAliasRule[] = [
-  {
-    alias: CUSTOM_WEBSEARCH_TOOL,
-    exact: ["websearch", "web_search"],
-    suffixes: ["_web_search", "-web_search", "_websearch", "-websearch"],
-  },
-  {
-    alias: CUSTOM_WEBFETCH_TOOL,
-    exact: ["webfetch", "web_fetch"],
-    suffixes: ["_web_fetch", "-web_fetch", "_webfetch", "-webfetch"],
-  },
-  {
-    alias: CUSTOM_LIST_MCP_RESOURCES_TOOL,
-    exact: ["list_mcp_resources"],
-    suffixes: ["_list_mcp_resources", "-list_mcp_resources"],
-  },
-  {
-    alias: CUSTOM_READ_MCP_RESOURCE_TOOL,
-    exact: ["read_mcp_resource"],
-    suffixes: ["_read_mcp_resource", "-read_mcp_resource"],
-  },
-]
-
-const COLLISION_SAFE_ALIASES = new Set([
-  CUSTOM_WEBSEARCH_TOOL,
-  CUSTOM_WEBFETCH_TOOL,
-  CUSTOM_LIST_MCP_RESOURCES_TOOL,
-  CUSTOM_READ_MCP_RESOURCE_TOOL,
-])
+/** Private marker printed by background-shell detach wrappers. */
+const BACKGROUND_SHELL_MARKER = "__CURSOR_BACKGROUND_SHELL__"
 
 /**
- * Give collision-prone web capabilities names Cursor will not confuse with its
- * native UI-bound WebSearch/WebFetch interactions. Exact host tools win; a
- * flattened MCP suffix is accepted only when it identifies one unique tool.
+ * Detach wrapper for Cursor `background_shell_spawn_args`.
+ * Host bash tools are typically foreground-only; detach inside that one call
+ * and print a private marker with PID + log path for the typed result.
  */
-export function buildCustomWebToolAliases(tools: OpencodeToolDef[]): AliasedToolCatalog {
-  const aliases = new Map<string, string>()
-  const ambiguous = new Map<string, string[]>()
-  const replacements = new Map<string, string>()
-
-  for (const rule of WEB_ALIAS_RULES) {
-    // A host/plugin may already expose the collision-safe public name. Keep it
-    // authoritative instead of hiding it behind a second mapping.
-    if (tools.some((tool) => tool.name === rule.alias)) continue
-
-    const exact = tools.filter((tool) => rule.exact.includes(tool.name.toLowerCase()))
-    const candidates = exact.length > 0
-      ? exact
-      : tools.filter((tool) => {
-          const name = tool.name.toLowerCase()
-          return rule.suffixes.some((suffix) => name.endsWith(suffix))
-        })
-
-    if (candidates.length !== 1) {
-      if (candidates.length > 1) ambiguous.set(rule.alias, candidates.map((tool) => tool.name))
-      continue
-    }
-
-    const original = candidates[0]!.name
-    aliases.set(rule.alias, original)
-    replacements.set(original, rule.alias)
-  }
-
-  return {
-    advertisedTools: tools.map((tool) => {
-      const alias = replacements.get(tool.name)
-      return alias ? { ...tool, name: alias, sourceName: tool.name } : { ...tool }
-    }),
-    aliases,
-    ambiguous,
-  }
+function buildBackgroundShellCommand(command: string): string {
+  return [
+    'bg_log="$(mktemp "${TMPDIR:-/tmp}/cursor-opencode-bg.XXXXXX")" || exit 1',
+    `nohup sh -c ${shellQuote(command)} >"$bg_log" 2>&1 </dev/null &`,
+    "bg_pid=$!",
+    `printf '${BACKGROUND_SHELL_MARKER}%s:%s\\n' "$bg_pid" "$bg_log"`,
+  ].join("\n")
 }
 
-export function resolveCustomWebToolAlias(
-  toolName: string,
-  aliases: ToolAliasRegistry | undefined,
-): string {
-  const direct = aliases?.get(toolName)
-  if (direct) return direct
-  for (const [alias, original] of aliases ?? []) {
-    if (toolName.endsWith(`_${alias}`)) return original
-  }
-  return toolName
-}
+// ── Cursor exec-variant → host tool name ──
 
-// ── Cursor exec-variant → opencode tool name ──
 
 // Native ExecServerMessage variants only (agent.v1). There is no edit_args or
 // glob_args on the exec channel — Cursor's EditToolCall is display-only, and
-// glob/edit from opencode are advertised as MCP tools and arrive as mcp_args.
+// glob/edit from the host are advertised as MCP tools and arrive as mcp_args.
 //
-// Design note (F11): Cursor has native delete / background-shell tools; OpenCode
-// does not. This provider intentionally remaps:
+// Cursor has native delete / background-shell tools; OpenCode-family hosts do
+// not. This adapter remaps:
 //   - delete_args → bash `rm -f -- <quoted-path>`
-//   - background_shell_spawn_args → bash (original command; plugin wraps nohup)
-// Permissions still flow through OpenCode's advertised `bash` tool. Soft-
-// background / detached children can outlive the OpenCode tool call; leftover
-// process cleanup is left to the user / OS. Arg key remapping happens below.
+//   - background_shell_spawn_args → bash (detach wrapper above)
+// Permissions still flow through the host's advertised `bash` tool.
 const cursorToolToOpencode: Record<string, string> = {
   read_args: "read",
   write_args: "write",
@@ -242,7 +152,7 @@ const cursorToolToOpencode: Record<string, string> = {
   mcp_args: "mcp",
 }
 
-/** Cursor-only fields that must not be forwarded as OpenCode tool input. */
+/** Cursor-only fields that must not be forwarded as host tool input. */
 const CURSOR_INTERNAL_KEYS = new Set([
   "tool_call_id",
   "toolCallId",
@@ -317,199 +227,15 @@ const CURSOR_SUBAGENT_TYPE_TO_OPENCODE: Record<string, string> = {
   security_review: "explore",
 }
 
-export type HostSubagentDefinition = {
-  name: string
-  description?: string
-}
-
-export type HostSubagentCatalog = {
-  executor?: "task" | "actor"
-  agents: HostSubagentDefinition[]
-  /** True when the host tool supplied its complete, permission-filtered catalog. */
-  complete: boolean
-}
-
-const SUBAGENT_CATALOG_MARKER = "Available agent types and the tools they have access to:"
-
-function parseSubagentDescriptionCatalog(description: string | undefined): {
-  found: boolean
-  agents: HostSubagentDefinition[]
-} {
-  if (!description) return { found: false, agents: [] }
-  const marker = description.indexOf(SUBAGENT_CATALOG_MARKER)
-  if (marker < 0) return { found: false, agents: [] }
-
-  const agents: HostSubagentDefinition[] = []
-  const lines = description.slice(marker + SUBAGENT_CATALOG_MARKER.length).split(/\r?\n/)
-  let started = false
-  for (const line of lines) {
-    const match = line.match(/^\s*-\s+([^:]+):\s*(.*)$/)
-    if (!match) {
-      if (started && line.trim()) break
-      continue
-    }
-    started = true
-    const name = match[1]!.trim().replace(/^`|`$/g, "")
-    if (!name) continue
-    const agentDescription = match[2]!.trim()
-    agents.push({
-      name,
-      ...(agentDescription ? { description: agentDescription } : {}),
-    })
-  }
-  return { found: true, agents }
-}
-
-function subagentTypeEnumValues(schema: unknown): string[] {
-  const out = new Set<string>()
-  const seen = new Set<object>()
-  const visit = (value: unknown, propertyName?: string): void => {
-    if (!value || typeof value !== "object") return
-    if (seen.has(value as object)) return
-    seen.add(value as object)
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item, propertyName)
-      return
-    }
-
-    const record = value as Record<string, unknown>
-    if (propertyName === "subagent_type" && Array.isArray(record.enum)) {
-      for (const item of record.enum) {
-        if (typeof item === "string" && item) out.add(item)
-      }
-    }
-    for (const [key, child] of Object.entries(record)) visit(child, key)
-  }
-  visit(schema)
-  return [...out]
-}
-
-/** Extract the current host's permission-filtered Task/Actor recipient catalog. */
-export function extractHostSubagentCatalog(tools: OpencodeToolDef[]): HostSubagentCatalog {
-  const executorTool = tools.find((tool) => tool.name === "actor") ??
-    tools.find((tool) => tool.name === "task")
-  if (!executorTool) return { agents: [], complete: true }
-
-  const described = parseSubagentDescriptionCatalog(executorTool.description)
-  const enumNames = subagentTypeEnumValues(executorTool.inputSchema)
-  const descriptions = new Map(described.agents.map((agent) => [agent.name, agent.description]))
-  // MiMo's Actor enum is stricter than its prose catalog (`mode: subagent`
-  // rather than every non-primary agent), so structured names are authoritative.
-  const names = new Set(
-    enumNames.length > 0 ? enumNames : described.agents.map((agent) => agent.name),
-  )
-  return {
-    executor: executorTool.name as "task" | "actor",
-    agents: [...names].map((name) => ({
-      name,
-      ...(descriptions.get(name) ? { description: descriptions.get(name) } : {}),
-    })),
-    complete: enumNames.length > 0 || described.found,
-  }
-}
-
-const GENERIC_CURSOR_SUBAGENT_TYPES = new Set([
-  "generalPurpose",
-  "general-purpose",
-  "general_purpose",
-  "general",
-  "unspecified",
-])
-
-function cursorSubagentCandidates(subagentType: string): string[] {
-  if (GENERIC_CURSOR_SUBAGENT_TYPES.has(subagentType)) return ["general"]
-  if (subagentType === "cursor-guide" || subagentType === "cursor_guide") {
-    return ["scout", "explore", "general"]
-  }
-  if (
-    subagentType === "explore" ||
-    subagentType === "bugbot" ||
-    subagentType === "security-review" ||
-    subagentType === "security_review"
-  ) {
-    return ["explore", "general"]
-  }
-  return ["general"]
-}
-
-/** Resolve a Cursor subtype against the agents the host can spawn this turn. */
-export function resolveCursorSubagentType(
-  subagentType: string,
-  catalog?: HostSubagentCatalog,
-): string | undefined {
-  const available = new Set(catalog?.agents.map((agent) => agent.name) ?? [])
-
-  // Explicit host/custom names win. `unspecified` and general aliases are
-  // intentionally excluded so they always select the host's generic agent.
-  if (!GENERIC_CURSOR_SUBAGENT_TYPES.has(subagentType) && available.has(subagentType)) {
-    return subagentType
-  }
-
-  const candidates = cursorSubagentCandidates(subagentType)
-  for (const candidate of candidates) {
-    if (available.has(candidate)) return candidate
-  }
-  if (catalog?.complete) return undefined
-  return candidates[0]
-}
-
 /**
  * Cursor's native Task/subagent protocol uses Cursor-owned subtype names while
  * OpenCode-family hosts execute named agents. Map known Cursor built-ins to
- * the closest host agent and preserve unknown values so user-defined OpenCode
- * agents can still be called by exact name.
+ * the closest host agent and preserve unknown values so user-defined agents
+ * can still be called by exact name.
  */
 export function mapCursorSubagentTypeToOpenCode(subagentType: string): string {
   return CURSOR_SUBAGENT_TYPE_TO_OPENCODE[subagentType] ?? subagentType
 }
-
-/** Resolve a native Cursor subagent request to this turn's executor and catalog. */
-export function remapNativeSubagentForCatalog(
-  parsed: ParsedExecRequest,
-  advertisedToolNames: Iterable<string>,
-  catalog?: HostSubagentCatalog,
-): void {
-  if (parsed.resultField !== "subagent_result" || parsed.toolName !== "task") return
-  const advertised = new Set(advertisedToolNames)
-  const executor = advertised.has("actor") ? "actor" : advertised.has("task") ? "task" : undefined
-  if (!executor) return
-
-  const description = str(parsed.args.description) ?? ""
-  const prompt = str(parsed.args.prompt) ?? ""
-  const cursorSubagentType = str(parsed.resultMetadata?.cursor_subagent_type) ??
-    str(parsed.args.subagent_type) ?? ""
-  const subagentType = resolveCursorSubagentType(cursorSubagentType, catalog)
-  if (!subagentType) {
-    const available = catalog?.agents.map((agent) => agent.name).join(", ") || "none"
-    parsed.localError =
-      `Cursor subagent '${cursorSubagentType}' has no compatible host agent. ` +
-      `Available subagents: ${available}.`
-    return
-  }
-
-  const resumeAgentId = str(parsed.args.task_id)
-  parsed.toolName = executor
-  if (executor === "task") {
-    parsed.args = {
-      description,
-      prompt,
-      subagent_type: subagentType,
-      ...(resumeAgentId ? { task_id: resumeAgentId } : {}),
-      ...(parsed.args.background === true ? { background: true } : {}),
-    }
-    return
-  }
-  parsed.args = {
-    operation: {
-      action: parsed.args.background === true ? "spawn" : "run",
-      description,
-      prompt,
-      subagent_type: subagentType,
-      ...(resumeAgentId ? { actor_id: resumeAgentId } : {}),
-    },
-  }
-}
-
 
 // ── Extract exec args from ExecServerMessage ──
 
@@ -962,8 +688,6 @@ export type ToolResultInput = {
   toolName?: string
   /** Original request fields required by a typed result (background shell). */
   resultMetadata?: Record<string, unknown>
-  /** Structured shell completion captured by the OpenCode plugin hook. */
-  shellOutcome?: CursorShellOutcome
 }
 
 /**
@@ -987,30 +711,9 @@ export function buildExecClientMessages(input: ToolResultInput): Uint8Array[] {
       if (input.output) {
         frames.push(encodeShellStream(input.execId, undefined, { stdout: { data: input.output } }))
       }
-      if (input.shellOutcome?.kind === "backgrounded") {
-        frames.push(encodeShellStream(input.execId, input.executionTimeMs, {
-          backgrounded: {
-            shell_id: input.shellOutcome.shellId,
-            command: input.shellOutcome.command,
-            working_directory: input.shellOutcome.workingDirectory,
-            pid: input.shellOutcome.pid,
-            ms_to_wait: input.shellOutcome.msToWait,
-            reason: input.shellOutcome.reason,
-          },
-        }))
-      } else if (input.shellOutcome?.kind === "timeout") {
-        frames.push(encodeShellStream(input.execId, input.executionTimeMs, {
-          // Native CLI represents timeout structurally. ShellAbortReason.TIMEOUT=2.
-          exit: { code: 0, aborted: true, abort_reason: 2 },
-        }))
-      } else {
-        const exitCode = input.shellOutcome?.kind === "exit"
-          ? Math.max(0, Math.min(0xffff_ffff, input.shellOutcome.code))
-          : 0
-        frames.push(encodeShellStream(input.execId, input.executionTimeMs, {
-          exit: { code: exitCode, aborted: false },
-        }))
-      }
+      frames.push(encodeShellStream(input.execId, input.executionTimeMs, {
+        exit: { code: 0, aborted: false },
+      }))
     }
   } else {
     const clientMsg: Record<string, unknown> = {
@@ -1023,7 +726,6 @@ export function buildExecClientMessages(input: ToolResultInput): Uint8Array[] {
       input.error,
       input.toolName,
       input.resultMetadata,
-      input.shellOutcome,
     )
     frames.push(
       encodeMessage("AgentClientMessage", {
@@ -1120,7 +822,6 @@ export function buildTypedExecResult(
   error?: string,
   toolName?: string,
   resultMetadata?: Record<string, unknown>,
-  shellOutcome?: CursorShellOutcome,
 ): Record<string, unknown> {
   switch (resultField) {
     case "read_result": {
@@ -1214,19 +915,7 @@ export function buildTypedExecResult(
       const command = str(resultMetadata?.command) ?? ""
       const workingDirectory = str(resultMetadata?.working_directory) ?? ""
       if (error) return { error: { command, working_directory: workingDirectory, error } }
-      // Prefer the structured outcome captured by the plugin after-hook; markers
-      // are already stripped from the stored/rendered OpenCode output by then.
-      if (shellOutcome?.kind === "backgrounded") {
-        return {
-          success: {
-            shell_id: shellOutcome.shellId,
-            command: shellOutcome.command || command,
-            working_directory: shellOutcome.workingDirectory || workingDirectory,
-            pid: shellOutcome.pid,
-          },
-        }
-      }
-      // Fallback when no plugin hook ran: parse the private spawn marker inline.
+      // Parse the private spawn marker printed by buildBackgroundShellCommand.
       const match = new RegExp(`${BACKGROUND_SHELL_MARKER}(\\d+):([^\\r\\n]+)`).exec(output)
       const pid = match ? Number(match[1]) : 0
       if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffff_ffff) {
@@ -1688,13 +1377,11 @@ function mcpStateToolDefinition(
 
 /**
  * Total fallback for Cursor's native MCP-resource exec channel (agent.v1
- * fields #17/#18, tasks/plans/fix-cursor-mcp-resource-exec.md). Under Option B
- * `list_mcp_resources`/`read_mcp_resource` execute through the ordinary
- * field-11 MCP path via the alias rules above, so any 17/18 that still reaches
- * this provider is Cursor emitting the native variant unsolicited (its own
- * client owns both executors unconditionally — there is no descriptor to
- * un-advertise). Cursor's executors are total; mirror that here rather than
- * guessing a generic success, which risks an endless heartbeat loop.
+ * fields #17/#18). Host MCP resource tools are advertised only when present;
+ * any native 17/18 that still reaches this adapter is Cursor emitting the
+ * variant unsolicited (its client owns both executors unconditionally).
+ * Cursor's executors are total; mirror that here rather than guessing a
+ * generic success, which risks an endless heartbeat loop.
  */
 export function buildListMcpResourcesFallback(execId: number): Uint8Array {
   return encodeMessage("AgentClientMessage", {

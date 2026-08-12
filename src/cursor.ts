@@ -1,37 +1,31 @@
-import { createCursor } from "./cursor/index.ts"
-import type { CursorFactory } from "./cursor/index.ts"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import type { AppConfig } from "./config.ts"
+import {
+  getCursorBackend,
+  resetCursorBackendCacheForTests,
+  type CreateCursorBackendOptions,
+} from "./cursor/index.ts"
 
-let cached: {
-  accessToken: string
-  cacheKey: string
-  cursor: CursorFactory
-} | undefined
+export type BackendModelInfo = { id: string }
 
-function factoryCacheKey(accessToken: string, config: AppConfig): string {
-  return [
-    accessToken,
-    config.cacheDir,
-    config.apiBaseURL,
-    config.agentBaseURL ?? "",
-  ].join("\0")
+export type BackendLLM = {
+  readonly id: string
+  languageModel(modelId: string): LanguageModelV3
+  listModels(): Promise<BackendModelInfo[]>
 }
 
-/** Process-wide Cursor provider so held-open Runs survive across HTTP tool turns. */
-export function getCursor(accessToken: string, config: AppConfig): CursorFactory {
-  const key = factoryCacheKey(accessToken, config)
-  if (cached && cached.cacheKey === key) return cached.cursor
-
-  const cursor = createCursor({
-    name: "cursor",
+function backendOptions(accessToken: string, config: AppConfig): CreateCursorBackendOptions {
+  return {
     accessToken,
     cacheDir: config.cacheDir,
     apiBaseURL: config.apiBaseURL,
     agentBaseURL: config.agentBaseURL,
-  })
-  cached = { accessToken, cacheKey: key, cursor }
-  return cursor
+  }
+}
+
+/** Process-wide Cursor backend so held-open Runs survive across HTTP tool turns. */
+export function getBackend(accessToken: string, config: AppConfig): BackendLLM {
+  return getCursorBackend(backendOptions(accessToken, config))
 }
 
 export function getLanguageModel(
@@ -39,10 +33,10 @@ export function getLanguageModel(
   accessToken: string,
   config: AppConfig,
 ): LanguageModelV3 {
-  return getCursor(accessToken, config).languageModel(modelId)
+  return getBackend(accessToken, config).languageModel(modelId)
 }
 
-/** Test helper — clear the cached provider factory. */
+/** Test helper — clear the cached backend factory. */
 export function resetCursorCacheForTests(): void {
-  cached = undefined
+  resetCursorBackendCacheForTests()
 }

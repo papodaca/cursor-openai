@@ -11,7 +11,8 @@
     "start": "bun run index.ts",
     "dev": "bun --watch index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src"
+    "test": "bun test src",
+    "commit-workflow": "bun run scripts/commit-workflow.ts"
   },
   "type": "module",
   "dependencies": {

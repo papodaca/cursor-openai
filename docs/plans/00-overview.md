@@ -14,7 +14,7 @@ Run a local (or self-hosted) **OpenAI-compatible HTTP API** that translates Chat
 |----------|--------|
 | Primary clients | Any OpenAI-compatible client (curl, OpenAI SDK, Continue, Cline, LiteLLM, etc.) |
 | MVP tools | Chat/text first; OpenAI tool pass-through in phase 2+ ([03](./03-future-tool-calling.md)) |
-| Cursor integration | ~~Reuse npm package `cursor-opencode-provider` via `createCursor()`~~ **superseded:** vendored protocol in-repo (`src/cursor/`) — transport/translation only, zero context injection ([04](./04-vendored-cursor-protocol.md)) |
+| Cursor integration | ~~Reuse npm package `cursor-opencode-provider` via `createCursor()`~~ **superseded:** vendored protocol keep-set under `src/cursor/` — transport/translation only, zero context injection ([04](./04-vendored-cursor-protocol.md)) |
 | Local clone | `./cursor-opencode-provider` is **reference only**, not a runtime dependency |
 | Runtime | Bun (`Bun.serve`) |
 
@@ -34,7 +34,7 @@ OpenAI client  →  this project (HTTP)  →  LanguageModelV3 (src/cursor/)  →
 flowchart LR
   Client["OpenAI client\n/v1/chat/completions"]
   Server["cursor-openai\nBun HTTP server"]
-  Vendor["src/cursor/\nvendored LanguageModelV3"]
+  Vendor["src/cursor/\nBackendLLM + protocol"]
   Cursor["Cursor agent API\nConnect-RPC / HTTP2"]
 
   Client -->|"JSON / SSE"| Server

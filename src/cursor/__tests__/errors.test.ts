@@ -8,7 +8,7 @@ import {
   cursorHttpError,
   toCursorProviderError,
 } from "../errors.js"
-import { connectFrameError, resolveRetryPolicy } from "../language-model.js"
+import { connectFrameError, resolveRetryPolicy } from "../retry.js"
 
 describe("Cursor provider errors", () => {
   it("classifies auth, server, and transport failures without response payloads", () => {

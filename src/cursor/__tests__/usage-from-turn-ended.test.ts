@@ -5,7 +5,7 @@ import {
   kiloShapedUsageFromV3,
   turnEndedCounter,
 } from "../usage.js"
-import { estimateTokens } from "../language-model.js"
+import { estimateTokens } from "../prompt.js"
 
 describe("turnEndedCounter", () => {
   it("truncates finite non-negative numbers", () => {

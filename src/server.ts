@@ -2,7 +2,7 @@ import type { AppConfig } from "./config.ts"
 import { requireProxyApiKey } from "./auth.ts"
 import type { AuthSession } from "./auth-session.ts"
 import { handleChatCompletion, sessionHeadersFromRequest } from "./bridge.ts"
-import { getLanguageModel } from "./cursor.ts"
+import { getBackend } from "./cursor.ts"
 import { ApiError, corsHeaders, errorResponse } from "./errors.ts"
 import { listModels, normalizeModelId } from "./models.ts"
 import { parseChatCompletionRequest } from "./openai/request.ts"
@@ -25,7 +25,8 @@ export function createHandler(config: AppConfig, auth: AuthTokenSource) {
       if (req.method === "GET" && url.pathname === "/v1/models") {
         requireProxyApiKey(req, config)
         const accessToken = await auth.getAccessToken()
-        const body = await listModels(config, { accessToken })
+        const backend = getBackend(accessToken, config)
+        const body = await listModels(config, { accessToken, backend })
         return Response.json(body, { headers: corsHeaders() })
       }
 
@@ -46,7 +47,7 @@ export function createHandler(config: AppConfig, auth: AuthTokenSource) {
         }
         const request = { ...parsed, model: modelId }
         const accessToken = await auth.getAccessToken()
-        const model = getLanguageModel(modelId, accessToken, config)
+        const model = getBackend(accessToken, config).languageModel(modelId)
         return await handleChatCompletion({
           model,
           request,

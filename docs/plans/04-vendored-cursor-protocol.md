@@ -2,6 +2,7 @@
 
 **Status:** implemented (Phases A–C complete; live Phase B verified 2026-08-11)
 **Date:** 2026-08-11
+**Updated:** 2026-08-11 — keep-set lives under `src/cursor/` (attribution: `src/cursor/NOTICE.md`). Briefly lived under `src/adapters/cursor/` during adapter extraction, then moved back.
 **Supersedes:** the "Cursor integration" decision in [00-overview.md](./00-overview.md) (reuse npm package → vendor in repo)
 
 ## Objective

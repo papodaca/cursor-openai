@@ -2,8 +2,6 @@ import type { BidiStream, BidiTerminalEvent } from "./transport/connect.js"
 import { trace } from "./debug.js"
 import { CursorProtocolError, type CursorProviderError } from "./errors.js"
 import { sessionActivity, type SessionActivitySource } from "./activity.js"
-import type { HostSubagentCatalog, ToolAliasRegistry } from "./protocol/tools.js"
-
 export type Frame = { flags: number; payload: Uint8Array }
 
 export type CursorContinuationOptions = {
@@ -118,12 +116,6 @@ export type PendingExec = {
   toolName?: string
   /** Original request fields required by a typed result message. */
   resultMetadata?: Record<string, unknown>
-  /**
-   * True when this pending entry was synthesized from a Cursor display-only
-   * tool_call_* frame (no ExecServerMessage). Continuation must not write an
-   * exec result back to Cursor — just clear pending and keep pumping.
-   */
-  bridged?: boolean
 }
 
 export type ContinuationTerminalReason =
@@ -181,22 +173,10 @@ export type CursorSession = {
   stream: BidiStream
   frames: AsyncIterator<Frame>
   pending: Map<number, PendingExec>
-  /**
-   * Cursor display tool calls (tool_call_started) awaiting either an exec or a
-   * tool_call_completed. Keyed by call_id. Cleared when exec handles the call
-   * or when we bridge the completed display call into an OpenCode tool-call.
-   */
-  displayToolCalls: Map<string, Record<string, unknown>>
-  /** Monotonic synthetic exec ids for bridged (display-only) OpenCode tool calls. */
-  nextBridgedExecId: number
   /** KV blob store: blob_id (hex) → data, for Cursor's out-of-band payload channel. */
   blobs: Map<string, Uint8Array>
   /** McpToolDefinition list advertised this turn — derived from caller tools only. */
   toolDescriptors: Array<Record<string, unknown>>
-  /** Cursor-facing web alias → exact executable host tool for this Run. */
-  toolAliases?: ToolAliasRegistry
-  /** Spawnable host agents extracted from this turn's Task/Actor definition. */
-  subagentCatalog?: HostSubagentCatalog
   /**
    * False when OpenCode passed no tools (compaction/summary) or toolChoice "none".
    * Cursor may still fire native Grep/etc.; we must refuse those on the Run
@@ -404,7 +384,6 @@ export class SessionManager {
     session: CursorSession,
     resultField: string,
     toolName?: string,
-    bridged = false,
     resultMetadata?: Record<string, unknown>,
   ): void {
     this.registerSession(session)
@@ -415,7 +394,6 @@ export class SessionManager {
     session.pending.set(execId, {
       resultField,
       toolName,
-      bridged,
       resultMetadata,
       state: "pending",
       registeredAt: now,
@@ -499,7 +477,7 @@ export class SessionManager {
 
     let framesWritten = 0
     try {
-      if (!pending.bridged && frames.length === 0) {
+      if (frames.length === 0) {
         throw new CursorProtocolError("No result frames were produced")
       }
       for (const frame of frames) {
@@ -598,7 +576,6 @@ export class SessionManager {
     session.pending.clear()
     session.pumpOwner = null
     session.pumpActive = false
-    session.displayToolCalls?.clear()
     session.blobs?.clear()
     this.sessions.delete(session)
     if (
