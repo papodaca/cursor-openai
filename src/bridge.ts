@@ -4,6 +4,7 @@ import type {
   LanguageModelV3FinishReason,
   LanguageModelV3FunctionTool,
   LanguageModelV3Prompt,
+  LanguageModelV3StreamPart,
   LanguageModelV3ToolChoice,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider"
@@ -23,6 +24,16 @@ import {
   sseData,
 } from "./openai/response.ts"
 import { ApiError, corsHeaders, mapProviderError } from "./errors.ts"
+
+/** SSE comment frame written during upstream silence to keep the connection warm. */
+const SSE_HEARTBEAT = ": keep-alive\n\n"
+
+/**
+ * Cadence for SSE heartbeats. Must stay well below Bun.serve's default 10s
+ * idleTimeout (and common client/proxy read timeouts) so a quiet upstream
+ * stream never looks idle at the socket level.
+ */
+export const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 8000
 
 function parseToolArguments(raw: string): unknown {
   const trimmed = raw.trim()
@@ -180,8 +191,10 @@ export async function handleChatCompletion(args: {
   request: OpenAIChatCompletionRequest
   abortSignal?: AbortSignal
   headers?: Record<string, string | undefined>
+  heartbeatIntervalMs?: number
 }): Promise<Response> {
   const { model, request, abortSignal, headers } = args
+  const heartbeatIntervalMs = args.heartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS
   const options = toCallOptions(request, abortSignal, headers)
   const id = completionId()
   const created = Math.floor(Date.now() / 1000)
@@ -236,9 +249,40 @@ export async function handleChatCompletion(args: {
         return index
       }
 
+      const iterator = stream[Symbol.asyncIterator]()
+      let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
+      const clearHeartbeatTimer = () => {
+        if (heartbeatTimer !== undefined) clearTimeout(heartbeatTimer)
+      }
+      /** Await the next upstream part, emitting SSE heartbeat comments while it stays quiet. */
+      const nextPart = async (
+        pending: Promise<IteratorResult<LanguageModelV3StreamPart>>,
+      ): Promise<IteratorResult<LanguageModelV3StreamPart>> => {
+        for (;;) {
+          const winner = await Promise.race([
+            pending.then((result) => ({ kind: "part" as const, result })),
+            new Promise<{ kind: "heartbeat" }>((resolve) => {
+              heartbeatTimer = setTimeout(() => resolve({ kind: "heartbeat" }), heartbeatIntervalMs)
+            }),
+          ])
+          if (winner.kind === "part") {
+            clearHeartbeatTimer()
+            return winner.result
+          }
+          controller.enqueue(encoder.encode(SSE_HEARTBEAT))
+        }
+      }
+
       try {
-        for await (const part of stream) {
-          if (abortSignal?.aborted) break
+        let pending = iterator.next()
+        for (;;) {
+          const result = await nextPart(pending)
+          if (result.done) break
+          if (abortSignal?.aborted) {
+            await iterator.return?.().catch(() => {})
+            break
+          }
+          const part = result.value
 
           if (part.type === "text-delta") {
             enqueue(
@@ -291,27 +335,28 @@ export async function handleChatCompletion(args: {
             // Full tool-call part: if streaming input was already emitted for this
             // id, skip; otherwise emit a one-shot tool_calls delta (non-delta providers).
             emittedToolCalls = true
-            if (toolIndexById.has(part.toolCallId)) continue
-            const index = ensureToolIndex(part.toolCallId)
-            const args =
-              typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {})
-            enqueue(
-              chatCompletionChunk({
-                id,
-                model: request.model,
-                created,
-                delta: {
-                  tool_calls: [
-                    {
-                      index,
-                      id: part.toolCallId,
-                      type: "function",
-                      function: { name: part.toolName, arguments: args },
-                    },
-                  ],
-                },
-              }),
-            )
+            if (!toolIndexById.has(part.toolCallId)) {
+              const index = ensureToolIndex(part.toolCallId)
+              const args =
+                typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {})
+              enqueue(
+                chatCompletionChunk({
+                  id,
+                  model: request.model,
+                  created,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index,
+                        id: part.toolCallId,
+                        type: "function",
+                        function: { name: part.toolName, arguments: args },
+                      },
+                    ],
+                  },
+                }),
+              )
+            }
           } else if (part.type === "finish") {
             finishReason = part.finishReason
             usage = part.usage
@@ -320,6 +365,8 @@ export async function handleChatCompletion(args: {
               ? part.error
               : new Error(String(part.error))
           }
+
+          pending = iterator.next()
         }
 
         let mapped = mapFinishReason(finishReason)
@@ -355,6 +402,8 @@ export async function handleChatCompletion(args: {
         } catch {
           controller.error(mapped instanceof Error ? mapped : new Error(message))
         }
+      } finally {
+        clearHeartbeatTimer()
       }
     },
     cancel() {

@@ -67,6 +67,9 @@ export function startServer(config: AppConfig, auth: AuthTokenSource) {
   const server = Bun.serve({
     port: config.port,
     fetch,
+    // Default 10s kills slow non-stream completions and pre-stream upstream waits
+    // mid-response; SSE heartbeats cover silence during streaming itself.
+    idleTimeout: 255, // Bun maximum
   })
   console.log(`cursor-openai listening on http://localhost:${server.port}`)
   console.log(`  GET  /health`)

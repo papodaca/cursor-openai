@@ -94,6 +94,34 @@ function mockModel(parts: LanguageModelV3StreamPart[]): LanguageModelV3 {
   }
 }
 
+/** Model whose stream pauses between parts, mimicking upstream "thinking" silence. */
+function delayedModel(
+  entries: Array<{ afterMs: number; part: LanguageModelV3StreamPart }>,
+): LanguageModelV3 {
+  return {
+    specificationVersion: "v3",
+    provider: "mock",
+    modelId: "mock-model",
+    supportedUrls: {},
+    async doGenerate(_options: LanguageModelV3CallOptions) {
+      throw new Error("not implemented")
+    },
+    async doStream(_options: LanguageModelV3CallOptions) {
+      return {
+        stream: new ReadableStream<LanguageModelV3StreamPart>({
+          async start(controller) {
+            for (const entry of entries) {
+              await new Promise((r) => setTimeout(r, entry.afterMs))
+              controller.enqueue(entry.part)
+            }
+            controller.close()
+          },
+        }),
+      }
+    },
+  }
+}
+
 const baseRequest: OpenAIChatCompletionRequest = {
   model: "composer-2.5",
   messages: [{ role: "user", content: "Hi" }],
@@ -195,6 +223,52 @@ describe("handleChatCompletion", () => {
     expect(body.choices[0]?.message.content).toBeNull()
     expect(body.choices[0]?.message.tool_calls[0]?.function.name).toBe("get_weather")
     expect(body.choices[0]?.message.tool_calls[0]?.function.arguments).toContain("SF")
+  })
+
+  test("stream emits SSE heartbeat comments during upstream silence", async () => {
+    // Regression: Bun.serve kills connections idle >10s mid-stream; clients then
+    // see truncated chunked responses. Heartbeats must keep the wire busy.
+    const model = delayedModel([
+      { afterMs: 90, part: { type: "text-delta", id: "0", delta: "late" } },
+      {
+        afterMs: 5,
+        part: {
+          type: "finish",
+          finishReason: { unified: "stop", raw: undefined },
+          usage: emptyUsage(),
+        },
+      },
+    ])
+    const res = await handleChatCompletion({
+      model,
+      request: { ...baseRequest, stream: true },
+      heartbeatIntervalMs: 20,
+    })
+    const text = await res.text()
+    const heartbeatAt = text.indexOf(": keep-alive")
+    const deltaAt = text.indexOf('"content":"late"')
+    expect(heartbeatAt).toBeGreaterThanOrEqual(0)
+    expect(deltaAt).toBeGreaterThan(heartbeatAt)
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
+  })
+
+  test("stream without upstream silence has no heartbeat comments", async () => {
+    const model = mockModel([
+      { type: "text-delta", id: "0", delta: "Hi" },
+      {
+        type: "finish",
+        finishReason: { unified: "stop", raw: undefined },
+        usage: emptyUsage(),
+      },
+    ])
+    const res = await handleChatCompletion({
+      model,
+      request: { ...baseRequest, stream: true },
+      heartbeatIntervalMs: 20,
+    })
+    const text = await res.text()
+    expect(text).not.toContain(": keep-alive")
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
   })
 
   test("stream emits tool_calls argument deltas", async () => {
