@@ -8,11 +8,6 @@ import {
   type CursorShellOutcome,
 } from "../shell-timeout.js"
 
-// Exec variant field number whose reply is the server-initiated request_context
-// probe (ExecServerMessage #10 → ExecClientMessage #10). request/result share a
-// field number for every exec variant, so this is also the result field.
-export const REQUEST_CONTEXT_RESULT_FIELD = 10
-
 // ── opencode tool definitions → Cursor request_context descriptors ──
 
 export type OpencodeToolDef = {
@@ -215,44 +210,6 @@ export function resolveCustomWebToolAlias(
   return toolName
 }
 
-/**
- * Build the nested McpFileSystemOptions / McpMetaToolOptions shape used by
- * requestContext.#23 / #34. One `McpDescriptor` per resolved server (builtins
- * and unknown tools under the synthetic default; configured MCP tools under
- * their upstream server id).
- */
-export function toolsToMcpDescriptors(
-  tools: OpencodeToolDef[],
-  providerIdentifier = "opencode",
-  knownMcpServers: Iterable<string> = [],
-): Array<Record<string, unknown>> {
-  if (tools.length === 0) return []
-
-  const order: string[] = []
-  const byServer = new Map<string, Array<Record<string, unknown>>>()
-
-  for (const t of tools) {
-    const id = resolveToolServerIdentity(t.sourceName ?? t.name, providerIdentifier, knownMcpServers)
-    let list = byServer.get(id.server)
-    if (!list) {
-      list = []
-      byServer.set(id.server, list)
-      order.push(id.server)
-    }
-    list.push({
-      tool_name: t.sourceName ? t.name : id.toolName,
-      description: t.description ?? "",
-      input_schema: encodeJsonAsValue(normalizeInputSchema(t.inputSchema)),
-    })
-  }
-
-  return order.map((server) => ({
-    server_name: server,
-    server_identifier: server,
-    tools: byServer.get(server)!,
-  }))
-}
-
 // ── Cursor exec-variant → opencode tool name ──
 
 // Native ExecServerMessage variants only (agent.v1). There is no edit_args or
@@ -283,15 +240,6 @@ const cursorToolToOpencode: Record<string, string> = {
   background_shell_spawn_args: "bash",
   subagent_args: "task",
   mcp_args: "mcp",
-}
-
-const opencodeToolToCursor: Record<string, string> = {
-  read: "read_args",
-  write: "write_args",
-  grep: "grep_args",
-  bash: "shell_stream_args",
-  task: "subagent_args",
-  mcp: "mcp_args",
 }
 
 /** Cursor-only fields that must not be forwarded as OpenCode tool input. */
@@ -339,14 +287,6 @@ const PRESERVE_EMPTY_STRING_KEYS = new Set([
   "newString",
   "new_string",
 ])
-
-export function mapExecServerToToolName(execField: string): string | undefined {
-  return cursorToolToOpencode[execField]
-}
-
-export function mapToolNameToExecField(toolName: string): string | undefined {
-  return opencodeToolToCursor[toolName]
-}
 
 const CURSOR_SUBAGENT_TYPE_TO_OPENCODE: Record<string, string> = {
   generalPurpose: "general",

@@ -84,9 +84,3 @@ export async function resolveAgentUrl(
   _inflight.set(cacheKey, promise)
   return promise
 }
-
-/** Reset the in-process memo. Tests only. */
-export function resetAgentUrlCache(): void {
-  _resolved.clear()
-  _inflight.clear()
-}

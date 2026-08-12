@@ -80,9 +80,8 @@ export function buildSeedConversationState(input?: {
 export function buildRunRequest(input: RunRequestInput): Uint8Array {
   const msgId = input.messageId ?? crypto.randomUUID()
 
-  // Advertise opencode's tools on the LIVE path: UserMessageAction.request_context
-  // (#2). AgentRunRequest.mcp_tools (#4) is prewarm-only / empty on real turns —
-  // putting tools only there is why the model fell back to native Grep/Read.
+  // Advertise tools on AgentRunRequest.mcp_tools (#4). request_context is omitted
+  // unless a caller explicitly supplies one (proxy path never does).
   const tools = input.tools ?? []
   const mcpTools = input.toolDescriptors ?? (tools.length > 0 ? toolsToDescriptors(tools) : [])
   const requestContext = input.requestContext

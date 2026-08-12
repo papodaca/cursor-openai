@@ -1872,15 +1872,6 @@ export function opencodeSessionKey(callOptions: LanguageModelV3CallOptions): str
   return undefined
 }
 
-/**
- * Map OpenCode's session id header to the active Cursor conversation_id.
- * Compaction resets remint via bindConversationId; otherwise the binding is
- * sticky for the OpenCode session. Falls back to a random UUID with no header.
- */
-export function resolveConversationId(callOptions: LanguageModelV3CallOptions): string {
-  return bindConversationId(opencodeSessionKey(callOptions)).conversationId
-}
-
 export { sessionIdToUuid } from "./protocol/conversation-bind.js"
 
 function extractTools(callOptions: LanguageModelV3CallOptions): OpencodeToolDef[] {
@@ -1960,11 +1951,6 @@ export function resolveTurnConversationReset(input: {
     return { reset: true, reason: "post-compaction-rebase" }
   }
   return { reset: false }
-}
-
-export function resetTurnStateForTests(): void {
-  toolCatalogBySession.clear()
-  postCompactionRebaseBySession.clear()
 }
 
 function extractUserText(lastUser: Record<string, unknown> | undefined): string {

@@ -15,11 +15,6 @@ let _debugFile: string | undefined
 let _debugFileUsesManagedDirectory = false
 let _announcedLogPath = false
 
-/** Whether `CURSOR_PROVIDER_DEBUG` is enabled for this process. */
-export function isDebugEnabled(): boolean {
-  return DEBUG_ENABLED
-}
-
 /** Resolve the debug log path (env override or per-uid tmpdir default). */
 export function resolveDebugLogPath(): string {
   if (process.env.CURSOR_PROVIDER_DEBUG_FILE) {
