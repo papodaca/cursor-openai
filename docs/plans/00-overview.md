@@ -13,7 +13,7 @@ Run a local (or self-hosted) **OpenAI-compatible HTTP API** that translates Chat
 |----------|--------|
 | Primary clients | Any OpenAI-compatible client (curl, OpenAI SDK, Continue, Cline, LiteLLM, etc.) |
 | MVP tools | Chat/text first; OpenAI tool pass-through in phase 2+ ([03](./03-future-tool-calling.md)) |
-| Cursor integration | Reuse npm package `cursor-opencode-provider` via `createCursor()` |
+| Cursor integration | ~~Reuse npm package `cursor-opencode-provider` via `createCursor()`~~ superseded: vendored protocol in-repo ([04](./04-vendored-cursor-protocol.md)) |
 | Local clone | `./cursor-opencode-provider` is **reference only**, not a runtime dependency |
 | Runtime | Bun (`Bun.serve`) |
 
@@ -48,6 +48,7 @@ flowchart LR
 | [01-mvp-openai-bridge.md](./01-mvp-openai-bridge.md) | 1 | Working `/v1/chat/completions` + `/v1/models` (text only) |
 | [02-auth-and-config.md](./02-auth-and-config.md) | 1 (parallel) | CLI `--auth`/`--api-key`, oauth refresh, proxy Bearer |
 | [03-future-tool-calling.md](./03-future-tool-calling.md) | 2+ | OpenAI tool passthrough (post-MVP) |
+| [04-vendored-cursor-protocol.md](./04-vendored-cursor-protocol.md) | 4 | Drop npm provider; vendored Cursor protocol with zero context injection (stateless multi-client) |
 
 ## Non-goals (near term)
 

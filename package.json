@@ -10,11 +10,11 @@
     "test": "bun test src"
   },
   "dependencies": {
-    "cursor-opencode-provider": "0.2.9"
+    "cursor-opencode-provider": "0.4.2"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "3.0.8",
+    "@ai-sdk/provider": "4.0.7",
     "@types/bun": "latest",
-    "typescript": "^5"
+    "typescript": "^7"
   }
 }
