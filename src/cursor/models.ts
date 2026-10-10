@@ -159,7 +159,10 @@ function normalizeModelInfo(value: unknown): ModelInfo | null {
   const family = optionalString(value, ["family"])
   const supportsThinking = optionalBoolean(value, ["supportsThinking", "supports_thinking"])
   const supportsAgent = optionalBoolean(value, ["supportsAgent", "supports_agent"])
-  const supportsImages = optionalBoolean(value, ["supportsImages", "supports_images"])
+  const supportsImages = applyImageInputOverride(
+    value.id,
+    optionalBoolean(value, ["supportsImages", "supports_images"]),
+  )
   const supportsMaxMode = optionalBoolean(value, ["supportsMaxMode", "supports_max_mode"])
   const maxContext = optionalPositiveNumber(
     value,
@@ -255,6 +258,17 @@ export function paramsImplyMaxMode(params: ModelParameterValue[]): boolean {
   )
 }
 
+/**
+ * The request-level max_mode bit. A picked variant owns the context tier.
+ * A maxMode hint applies only when the caller did not pick a variant.
+ */
+export function resolveVariantMaxMode(
+  params: ModelParameterValue[],
+  opts: { picked?: ModelParameterValue[]; maxMode?: boolean } = {},
+): boolean {
+  return paramsImplyMaxMode(params) || (opts.picked === undefined && opts.maxMode === true)
+}
+
 // Cursor encodes a model's context window as a variant parameter `id: "context"`
 // whose value is a tier string — the same 200k / 272k / 300k / 1m the IDE's
 // picker shows. The base tier rides on the default non-max variant; the 1M
@@ -331,6 +345,20 @@ export async function writeCache(cacheDir: string, cache: ModelCache): Promise<v
 
 // ── Map live API response to ModelInfo[] ──
 
+/**
+ * AvailableModels marks grok-4.7 supportsImages false. The model accepts
+ * images anyway, and Cursor's own docs list vision for it.
+ */
+const IMAGE_INPUT_OVERRIDES = new Set(["grok-4.7"])
+
+function applyImageInputOverride(
+  modelId: string,
+  supportsImages: boolean | undefined,
+): boolean | undefined {
+  if (IMAGE_INPUT_OVERRIDES.has(modelId)) return true
+  return supportsImages
+}
+
 function apiBoolean(record: Record<string, unknown>, names: readonly string[]): boolean {
   const value = optionalBoolean(record, names)
   if (value === null) throw new Error(`AvailableModels returned a non-boolean ${names[0]}`)
@@ -386,10 +414,11 @@ export function mapAvailableModelsResponse(
       ) ??
       variantContextTokens(variants.find((v) => v.parameterValues.some((p) => p.id === "context")))
     const variantMaxContext = variantContextTokens(variants.find((v) => v.isDefaultMax))
-    const supportsImages = optionalBoolean(e, ["supportsImages", "supports_images"])
-    if (supportsImages === null) {
+    const reportedImages = optionalBoolean(e, ["supportsImages", "supports_images"])
+    if (reportedImages === null) {
       throw new Error(`AvailableModels returned invalid supportsImages for ${name}`)
     }
+    const supportsImages = applyImageInputOverride(name, reportedImages)
 
     models.push({
       id: name,
@@ -466,10 +495,7 @@ export function resolveVariantParameters(
         v.parameterValues.every((parameter) => pickedById.get(parameter.id) === parameter.value),
     )
     if (exact) {
-      return buildRequestedModelParams(exact.parameterValues, {
-        reasoningEffort: opts.reasoningEffort,
-        maxMode: wantMax,
-      })
+      return exact.parameterValues.map((parameter) => ({ ...parameter }))
     }
     throw new CursorVariantSelectionError(
       `is stale for model ${JSON.stringify(model.id)}: its exact parameter tuple is unavailable`,
@@ -539,6 +565,25 @@ export async function refreshModelCache(
     return await refresh
   } finally {
     if (refreshesByDirectory.get(key) === refresh) refreshesByDirectory.delete(key)
+  }
+}
+
+/** Fields this proxy can put on an OpenAI-compatible model list entry. */
+export function cursorCatalogFields(model: ModelInfo): {
+  id: string
+  name?: string
+  contextLength?: number
+  supportsImages?: boolean
+} {
+  const lengths = [model.maxContext, model.maxContextForMaxMode].filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
+  )
+  const contextLength = lengths.length > 0 ? Math.max(...lengths) : undefined
+  return {
+    id: model.id,
+    ...(model.displayName ? { name: model.displayName } : {}),
+    ...(contextLength === undefined ? {} : { contextLength }),
+    ...(typeof model.supportsImages === "boolean" ? { supportsImages: model.supportsImages } : {}),
   }
 }
 

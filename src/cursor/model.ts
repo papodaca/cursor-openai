@@ -35,7 +35,7 @@ import {
   readCache,
   cacheFilePath,
   resolveVariantParameters,
-  paramsImplyMaxMode,
+  resolveVariantMaxMode,
   extractCursorVariantParameters,
   resolveCursorWireModelId,
   type ModelInfo,
@@ -253,7 +253,10 @@ async function startSession(
     maxMode: hintMaxMode,
     picked,
   })
-  const maxMode = hintMaxMode || paramsImplyMaxMode(parameterValues)
+  const maxMode = resolveVariantMaxMode(parameterValues, {
+    picked,
+    maxMode: hintMaxMode,
+  })
 
   const conversationState = resuming
     ? recovery.checkpoint

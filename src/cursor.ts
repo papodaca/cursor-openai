@@ -6,7 +6,13 @@ import {
   type CreateCursorBackendOptions,
 } from "./cursor/index.ts"
 
-export type BackendModelInfo = { id: string }
+export type BackendModelInfo = {
+  id: string
+  name?: string
+  /** Largest known context window, in tokens. */
+  contextLength?: number
+  supportsImages?: boolean
+}
 
 export type BackendLLM = {
   readonly id: string

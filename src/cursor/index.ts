@@ -1,5 +1,5 @@
 import type { LanguageModelV3 } from "@ai-sdk/provider"
-import { discoverModels } from "./models.js"
+import { cursorCatalogFields, discoverModels } from "./models.js"
 import { CURSOR_PROVIDER_ID, defaultCacheDir } from "./shared.js"
 import type { CursorContinuationOptions } from "./session.js"
 import type { BackendLLM, BackendModelInfo } from "../cursor.js"
@@ -53,7 +53,7 @@ export function createCursorBackend(options: CreateCursorBackendOptions): Backen
       const models = await discoverModels(accessToken, resolved.cacheDir!, {
         apiBaseURL: resolved.apiBaseURL,
       })
-      return models.map((m) => ({ id: m.id }))
+      return models.map((model) => cursorCatalogFields(model))
     },
   }
 }

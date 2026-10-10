@@ -369,6 +369,51 @@ describe("HTTP routes", () => {
     expect(data.data.map((m) => m.id)).toEqual(["default", "grok-4.5"])
   })
 
+  test("listModels publishes context length and input modalities", async () => {
+    const data = await listModels(
+      {
+        ...baseConfig,
+        cacheDir: "/tmp/does-not-exist-cursor-openai-catalog",
+      },
+      {
+        accessToken: "tok",
+        discover: async () => [
+          {
+            id: "composer-2.5",
+            name: "Composer 2.5",
+            contextLength: 1_000_000,
+            supportsImages: true,
+          },
+          {
+            id: "text-only",
+            contextLength: 200_000,
+            supportsImages: false,
+          },
+          { id: "unknown-caps" },
+        ],
+      },
+    )
+    expect(data.data[0]).toMatchObject({
+      id: "composer-2.5",
+      name: "Composer 2.5",
+      context_length: 1_000_000,
+      max_model_len: 1_000_000,
+      top_provider: { context_length: 1_000_000 },
+      architecture: {
+        modality: "text+image->text",
+        input_modalities: ["text", "image"],
+        output_modalities: ["text"],
+      },
+    })
+    expect(data.data[1]?.architecture).toEqual({
+      modality: "text->text",
+      input_modalities: ["text"],
+      output_modalities: ["text"],
+    })
+    expect(data.data[2]?.architecture).toBeUndefined()
+    expect(data.data[2]?.context_length).toBeUndefined()
+  })
+
   test("listModels falls back when discover fails", async () => {
     const data = await listModels(
       {

@@ -1,14 +1,23 @@
-import path from "node:path"
-import { readFile } from "node:fs/promises"
-import { discoverModels } from "./cursor/models.ts"
-import type { BackendLLM } from "./cursor.ts"
+import { cursorCatalogFields, discoverModels, readCache } from "./cursor/models.ts"
+import type { BackendLLM, BackendModelInfo } from "./cursor.ts"
 import type { AppConfig } from "./config.ts"
+
+export type OpenAIModelArchitecture = {
+  modality: "text->text" | "text+image->text"
+  input_modalities: Array<"text" | "image">
+  output_modalities: ["text"]
+}
 
 export type OpenAIModel = {
   id: string
   object: "model"
   created: number
   owned_by: string
+  name?: string
+  context_length?: number
+  max_model_len?: number
+  architecture?: OpenAIModelArchitecture
+  top_provider?: { context_length: number }
 }
 
 const FALLBACK_MODELS = ["composer-2.5"]
@@ -18,7 +27,7 @@ export type DiscoverModelsFn = (
   token: string,
   cacheDir: string,
   options?: { apiBaseURL?: string; baseURL?: string; timeoutMs?: number },
-) => Promise<Array<{ id: string }>>
+) => Promise<BackendModelInfo[]>
 
 export type ListModelsOptions = {
   accessToken?: string
@@ -28,7 +37,10 @@ export type ListModelsOptions = {
   discover?: DiscoverModelsFn
 }
 
-const defaultDiscover: DiscoverModelsFn = discoverModels
+const defaultDiscover: DiscoverModelsFn = async (token, cacheDir, options) => {
+  const models = await discoverModels(token, cacheDir, options)
+  return models.map((model) => cursorCatalogFields(model))
+}
 
 /**
  * Normalize client model ids to Cursor wire ids.
@@ -55,33 +67,42 @@ export function normalizeModelId(modelId: string): string {
   return trimmed
 }
 
-function toOpenAIModel(id: string, created = 0): OpenAIModel {
-  return {
-    id,
+function toOpenAIModel(model: BackendModelInfo | string, created = 0): OpenAIModel {
+  if (typeof model === "string") {
+    return { id: model, object: "model", created, owned_by: "cursor" }
+  }
+  const entry: OpenAIModel = {
+    id: model.id,
     object: "model",
     created,
     owned_by: "cursor",
   }
+  if (model.name) entry.name = model.name
+  if (model.contextLength !== undefined) {
+    entry.context_length = model.contextLength
+    entry.max_model_len = model.contextLength
+    entry.top_provider = { context_length: model.contextLength }
+  }
+  if (typeof model.supportsImages === "boolean") {
+    entry.architecture = model.supportsImages
+      ? {
+          modality: "text+image->text",
+          input_modalities: ["text", "image"],
+          output_modalities: ["text"],
+        }
+      : {
+          modality: "text->text",
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+        }
+  }
+  return entry
 }
 
-async function readCachedModelIds(cacheDir: string): Promise<string[] | null> {
-  const filePath = path.join(cacheDir, "cursor-models.json")
-  try {
-    const raw = await readFile(filePath, "utf8")
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
-    const models = (parsed as { models?: unknown }).models
-    if (!Array.isArray(models)) return null
-    const ids: string[] = []
-    for (const entry of models) {
-      if (entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string") {
-        ids.push((entry as { id: string }).id)
-      }
-    }
-    return ids.length > 0 ? ids : null
-  } catch {
-    return null
-  }
+async function readCachedCatalog(cacheDir: string): Promise<BackendModelInfo[] | null> {
+  const cached = await readCache(cacheDir)
+  if (!cached || cached.models.length === 0) return null
+  return cached.models.map((model) => cursorCatalogFields(model))
 }
 
 export async function listModels(
@@ -111,7 +132,7 @@ export async function listModels(
       if (models.length > 0) {
         return {
           object: "list",
-          data: models.map((m) => toOpenAIModel(m.id, created)),
+          data: models.map((model) => toOpenAIModel(model, created)),
         }
       }
     } catch {
@@ -119,11 +140,11 @@ export async function listModels(
     }
   }
 
-  const cached = await readCachedModelIds(config.cacheDir)
+  const cached = await readCachedCatalog(config.cacheDir)
   if (cached) {
     return {
       object: "list",
-      data: cached.map((id) => toOpenAIModel(id, created)),
+      data: cached.map((model) => toOpenAIModel(model, created)),
     }
   }
 
