@@ -56,14 +56,49 @@ export function resolveToolServerIdentity(
 }
 
 /**
- * Convert the per-turn tool list into Cursor `McpToolDefinition` entries for
- * `request_context.tools` (#7) and `AgentRunRequest.mcp_tools`.
- *
- * Builtins and unknown plugin/custom tools are advertised under the synthetic
- * default server (`opencode`). Tools whose prefixes match configured MCP
- * servers keep those server ids (`github`, …). Composite `name` is
- * `<server>-<bareTool>`; local execution still uses the full host id
- * reconstructed in `mcpRealToolName`.
+ * Nested MCP descriptors. Full name, description, and schema are for exec #36.
+ * The Run's `mcp_meta_tool_options` uses `{ namesOnly: true }`, tool_name only.
+ */
+export function toolsToMcpDescriptors(
+  tools: OpencodeToolDef[],
+  providerIdentifier = "opencode",
+  knownMcpServers: Iterable<string> = [],
+  options?: { namesOnly?: boolean },
+): Array<Record<string, unknown>> {
+  if (tools.length === 0) return []
+  const namesOnly = options?.namesOnly === true
+  const ordered = [...tools].sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  )
+  const byServer = new Map<string, Array<Record<string, unknown>>>()
+  for (const tool of ordered) {
+    const id = resolveToolServerIdentity(tool.name, providerIdentifier, knownMcpServers)
+    let list = byServer.get(id.server)
+    if (!list) {
+      list = []
+      byServer.set(id.server, list)
+    }
+    list.push(
+      namesOnly
+        ? { tool_name: id.toolName }
+        : {
+            tool_name: id.toolName,
+            description: tool.description ?? "",
+            input_schema: encodeJsonAsValue(normalizeInputSchema(tool.inputSchema)),
+          },
+    )
+  }
+  return [...byServer.keys()].map((server) => ({
+    server_name: server,
+    server_identifier: server,
+    tools: byServer.get(server)!,
+  }))
+}
+
+/**
+ * Full `McpToolDefinition` entries for exec #36. Builtins stay under the
+ * synthetic `opencode` server. Composite `name` is `<server>-<bareTool>`.
+ * The Run request does not send these. It sends names only.
  */
 export function toolsToDescriptors(
   tools: OpencodeToolDef[],
@@ -1298,48 +1333,44 @@ export function buildRequestContextResult(
 }
 
 /**
- * Answer Cursor's exec #36 MCP-state probe from the same descriptors advertised
- * in RequestContext. OpenCode remains the executor; this only confirms that the
- * provider's virtual MCP servers and their tools are available.
+ * Answer Cursor's exec #36 MCP-state probe from the full descriptors advertised
+ * this turn. The Run itself only carried tool names. This reply is where
+ * description and input_schema go out.
  */
 export function buildMcpStateResult(
   execId: number,
   args: Record<string, unknown>,
-  requestContext: Record<string, unknown>,
+  toolDescriptors: ReadonlyArray<Record<string, unknown>>,
 ): Uint8Array {
   const requested = new Set(
     Array.isArray(args.server_identifiers)
       ? args.server_identifiers.filter((id): id is string => typeof id === "string" && id.length > 0)
       : [],
   )
-  const fsOptions = recordValue(requestContext.mcp_file_system_options)
-  const nested = Array.isArray(fsOptions?.mcp_descriptors)
-    ? fsOptions.mcp_descriptors.map(recordValue).filter((d): d is Record<string, unknown> => !!d)
-    : []
-  const descriptors = nested.length > 0 ? nested : descriptorsFromFlatTools(requestContext.tools)
-  const flatTools = Array.isArray(requestContext.tools)
-    ? requestContext.tools.map(recordValue).filter((tool): tool is Record<string, unknown> => !!tool)
-    : []
-  const servers = descriptors
-    .filter((descriptor) => {
-      const id = stringValue(descriptor.server_identifier)
-      return requested.size === 0 || (id !== undefined && requested.has(id))
+  const byServer = new Map<string, Array<Record<string, unknown>>>()
+  for (const tool of toolDescriptors) {
+    const server = stringValue(tool.provider_identifier)
+    const toolName = stringValue(tool.tool_name)
+    if (!server || !toolName) continue
+    if (requested.size > 0 && !requested.has(server)) continue
+    let list = byServer.get(server)
+    if (!list) {
+      list = []
+      byServer.set(server, list)
+    }
+    list.push({
+      name: stringValue(tool.name) ?? `${server}-${toolName}`,
+      description: stringValue(tool.description) ?? "",
+      input_schema: tool.input_schema,
+      provider_identifier: server,
+      tool_name: toolName,
     })
-    .map((descriptor) => {
-      const serverIdentifier =
-        stringValue(descriptor.server_identifier) ?? stringValue(descriptor.server_name) ?? ""
-      const tools = Array.isArray(descriptor.tools)
-        ? descriptor.tools
-            .map(recordValue)
-            .filter((tool): tool is Record<string, unknown> => !!tool)
-            .map((tool) => mcpStateToolDefinition(serverIdentifier, tool, flatTools))
-        : []
-      return {
-        server_name: stringValue(descriptor.server_name) ?? serverIdentifier,
-        server_identifier: serverIdentifier,
-        tools,
-      }
-    })
+  }
+  const servers = [...byServer].map(([server, tools]) => ({
+    server_name: server,
+    server_identifier: server,
+    tools,
+  }))
 
   return encodeMessage("AgentClientMessage", {
     exec_client_message: {
@@ -1347,32 +1378,6 @@ export function buildMcpStateResult(
       mcp_state_exec_result: { success: { servers } },
     },
   })
-}
-
-/**
- * Exec #36 uses McpToolDefinition, not the narrower McpToolDescriptor used by
- * RequestContext's filesystem/meta-tool catalogs. Rehydrate the full identity
- * from RequestContext.tools so Cursor's native get_mcp_tools can correlate the
- * discovered definition with the later provider_identifier/tool_name request.
- */
-function mcpStateToolDefinition(
-  serverIdentifier: string,
-  descriptor: Record<string, unknown>,
-  flatTools: Array<Record<string, unknown>>,
-): Record<string, unknown> {
-  const toolName = stringValue(descriptor.tool_name) ?? ""
-  const advertised = flatTools.find((tool) =>
-    stringValue(tool.provider_identifier) === serverIdentifier
-      && stringValue(tool.tool_name) === toolName
-  )
-  return {
-    name: stringValue(advertised?.name) ?? `${serverIdentifier}-${toolName}`,
-    description:
-      stringValue(advertised?.description) ?? stringValue(descriptor.description) ?? "",
-    input_schema: advertised?.input_schema ?? descriptor.input_schema,
-    provider_identifier: serverIdentifier,
-    tool_name: toolName,
-  }
 }
 
 /**
@@ -1408,30 +1413,3 @@ export function buildReadMcpResourceFallback(
   })
 }
 
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
-}
-
-function descriptorsFromFlatTools(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return []
-  const byServer = new Map<string, Array<Record<string, unknown>>>()
-  for (const raw of value) {
-    const tool = recordValue(raw)
-    if (!tool) continue
-    const server = stringValue(tool.provider_identifier) ?? "opencode"
-    const tools = byServer.get(server) ?? []
-    tools.push({
-      tool_name: stringValue(tool.tool_name) ?? stringValue(tool.name) ?? "",
-      description: stringValue(tool.description) ?? "",
-      input_schema: tool.input_schema,
-    })
-    byServer.set(server, tools)
-  }
-  return [...byServer].map(([server, tools]) => ({
-    server_name: server,
-    server_identifier: server,
-    tools,
-  }))
-}

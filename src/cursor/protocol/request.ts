@@ -1,6 +1,6 @@
 import type { CursorImageInput } from "../image-input.js"
 import { encodeMessage, getMessageTypes } from "./messages.js"
-import { toolsToDescriptors, type OpencodeToolDef } from "./tools.js"
+import { toolsToMcpDescriptors, type OpencodeToolDef } from "./tools.js"
 
 export type SeedHistoryMessage = {
   role: "system" | "user" | "assistant"
@@ -83,6 +83,31 @@ export function buildSeedConversationState(input?: {
 }
 
 /**
+ * Request context this proxy is willing to send: the caller's system text as
+ * one global rule, and caller tool names. No env, git, or project layout.
+ * Undefined when the turn has neither.
+ */
+export function buildProxyRequestContext(input: {
+  systemPrompt?: string
+  tools?: OpencodeToolDef[]
+  requestContext?: Record<string, unknown>
+}): Record<string, unknown> | undefined {
+  const systemText = input.systemPrompt?.trim() ? input.systemPrompt : undefined
+  const tools = input.tools ?? []
+  if (!systemText && tools.length === 0 && !input.requestContext) return undefined
+  const context: Record<string, unknown> = { ...input.requestContext }
+  if (systemText) context.rules = [systemInstructionsRule(systemText)]
+  if (tools.length > 0) {
+    const descriptors = toolsToMcpDescriptors(tools, "opencode", [], { namesOnly: true })
+    context.mcp_meta_tool_options = {
+      enabled: true,
+      ...(descriptors.length > 0 ? { mcp_descriptors: descriptors } : {}),
+    }
+  }
+  return context
+}
+
+/**
  * Build an AgentClientMessage{run_request} for a conversation turn.
  *
  * Live `user_message.text` is the current prompt only — same as Cursor CLI.
@@ -91,14 +116,9 @@ export function buildSeedConversationState(input?: {
 export function buildRunRequest(input: RunRequestInput): Uint8Array {
   const msgId = input.messageId ?? crypto.randomUUID()
 
-  // Advertise tools on AgentRunRequest.mcp_tools (#4). The only request_context
-  // this proxy adds on its own is the caller's system text as one global rule.
-  const tools = input.tools ?? []
-  const mcpTools = input.toolDescriptors ?? (tools.length > 0 ? toolsToDescriptors(tools) : [])
-  const systemText = input.systemPrompt?.trim() ? input.systemPrompt : undefined
-  const requestContext = systemText
-    ? { ...input.requestContext, rules: [systemInstructionsRule(systemText)] }
-    : input.requestContext
+  // Field 4 stays empty on a real turn. Tool names ride on request_context.
+  // Full schemas are answered later on exec #36 from session.toolDescriptors.
+  const requestContext = buildProxyRequestContext(input)
 
   const userMessage: Record<string, unknown> = {
     text: input.text,
@@ -137,9 +157,7 @@ export function buildRunRequest(input: RunRequestInput): Uint8Array {
       parameters: input.parameterValues ?? [],
     },
     conversation_state: conversationState,
-    // Keep #4 populated too (harmless on real turns; useful for prewarm /
-    // older server builds that still read it).
-    mcp_tools: { mcp_tools: mcpTools },
+    mcp_tools: { mcp_tools: [] },
     unknown_flag: 0,
     field_12: 0,
   }

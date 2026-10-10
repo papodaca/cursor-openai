@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 /**
  * Tool-calling checks against a running cursor-openai proxy.
- * Tool defs stay on AgentRunRequest.mcp_tools. This script asks whether that
- * path is enough, by leaving tool_choice on auto and recording the name the
- * model actually calls.
+ *
+ * The schema check is the success measure for names-only advertisement.
+ * `place_order` argument names exist only in the JSON schema. The prompt says
+ * "stock" and "count", not `sku` and `qty`. A pass means Cursor received the
+ * schema and called that tool. A call to Read, Grep, or Shell is a fail.
  *
  *   bun run live:tools
  *   API_KEY=abc123 BASE_URL=http://localhost:8787 MODEL=composer-2.5 bun run live:tools
@@ -44,6 +46,16 @@ const vaultTool = fn(
   "Look up a vault entry by id. The value is not known until this tool returns.",
   { id: { type: "string" } },
   ["id"],
+)
+
+const placeOrderTool = fn(
+  "place_order",
+  "Submit one warehouse order. Argument names are defined only by the schema.",
+  {
+    sku: { type: "string" },
+    qty: { type: "integer" },
+  },
+  ["sku", "qty"],
 )
 
 const webFetchTool = fn(
@@ -99,6 +111,18 @@ async function complete(args: {
   }
 }
 
+function parsedArgs(call: ToolCall | undefined): Record<string, unknown> {
+  if (!call) return {}
+  try {
+    const value = JSON.parse(call.arguments) as unknown
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
 function describeCalls(calls: ToolCall[], finish: string | null, content: string): string {
   if (calls.length === 0) {
     return `no tool call, finish=${finish} text=${JSON.stringify(content).slice(0, 200)}`
@@ -136,6 +160,60 @@ async function main() {
     return finish()
   }
   console.log(`model       ${model}`)
+
+  const orderSession = `live-tools-order-${crypto.randomUUID()}`
+  const orderMessages: ChatMessage[] = [
+    {
+      role: "user",
+      content: "Use place_order for stock HAMMER-9, count 3. Do not guess a confirmation number.",
+    },
+  ]
+  try {
+    const ordered = await complete({
+      model,
+      sessionId: orderSession,
+      messages: orderMessages,
+      tools: [placeOrderTool],
+      toolChoice: "auto",
+    })
+    const call = ordered.toolCalls[0]
+    const args = parsedArgs(call)
+    const qty = args.qty
+    const schemaHit = ordered.toolCalls.length === 1
+      && call?.name === "place_order"
+      && args.sku === "HAMMER-9"
+      && (qty === 3 || qty === "3")
+    record(
+      "schema-only argument names are used",
+      schemaHit,
+      describeCalls(ordered.toolCalls, ordered.finish, ordered.content),
+    )
+    if (schemaHit && call) {
+      orderMessages.push(assistantMessage(ordered.content, ordered.toolCalls))
+      orderMessages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        name: "place_order",
+        content: "order-id-4401",
+      })
+      const confirmed = await complete({
+        model,
+        sessionId: orderSession,
+        messages: orderMessages,
+        tools: [placeOrderTool],
+        toolChoice: "auto",
+      })
+      record(
+        "model repeats the place_order result",
+        confirmed.toolCalls.length === 0 && confirmed.content.includes("order-id-4401"),
+        confirmed.toolCalls.length > 0
+          ? describeCalls(confirmed.toolCalls, confirmed.finish, confirmed.content)
+          : JSON.stringify(confirmed.content).slice(0, 300),
+      )
+    }
+  } catch (error) {
+    record("schema-only argument names are used", false, (error as Error).message)
+  }
 
   const offered = [vaultTool, webFetchTool]
   const sessionId = `live-tools-${crypto.randomUUID()}`

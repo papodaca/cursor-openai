@@ -12,7 +12,7 @@ import {
   type BidiStream,
 } from "./transport/connect.js"
 import { trace } from "./debug.js"
-import { buildRunRequest, buildHeartbeat } from "./protocol/request.js"
+import { buildProxyRequestContext, buildRunRequest, buildHeartbeat } from "./protocol/request.js"
 import {
   buildExecClientMessages,
   toolsToDescriptors,
@@ -280,6 +280,7 @@ async function startSession(
     cacheDir: options.cacheDir,
   })
   const toolDescriptors = tools.length > 0 ? toolsToDescriptors(tools) : []
+  const requestContext = buildProxyRequestContext({ systemPrompt, tools }) ?? {}
   const reqBytes = buildRunRequest({
     text: userText,
     images,
@@ -337,6 +338,7 @@ async function startSession(
     pending: new Map(),
     blobs: new Map(),
     toolDescriptors,
+    requestContext,
     allowTools,
     usageEstimate,
     pumpActive: false,

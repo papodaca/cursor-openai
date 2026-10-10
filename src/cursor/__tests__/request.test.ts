@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { buildRunRequest, buildHeartbeat } from "../protocol/request.ts"
+import { buildMcpStateResult, toolsToDescriptors } from "../protocol/tools.ts"
 import { decodeMessage } from "../protocol/messages.ts"
 import { decodeFramePayload, streamFrames } from "../protocol/framing.ts"
 import { gunzipSync } from "node:zlib"
@@ -50,7 +51,7 @@ describe("buildRunRequest", () => {
     expect(decoded.run_request.conversation_group_id ?? "").toBe("")
   })
 
-  it("injects caller tools into AgentRunRequest #4 mcp_tools", () => {
+  it("advertises caller tools by name and leaves mcp_tools empty", () => {
     const data = buildRunRequest({
       text: "hi",
       modelId: "claude-opus-4-8",
@@ -61,30 +62,25 @@ describe("buildRunRequest", () => {
       ],
     })
     const decoded = decodeMessage<any>("AgentClientMessage", data)
-    const descriptors = decoded.run_request.mcp_tools?.mcp_tools
-    expect(descriptors).toHaveLength(2)
-    expect(descriptors[0].name).toBe("opencode-read")
-    expect(descriptors[0].tool_name).toBe("read")
-    expect(descriptors[0].provider_identifier).toBe("opencode")
-    expect(descriptors[0].description).toBe("Read a file")
-    expect(descriptors[0].input_schema.length).toBeGreaterThan(0)
+    expect(decoded.run_request.mcp_tools?.mcp_tools ?? []).toHaveLength(0)
+    const meta = decoded.run_request.action.user_message_action.request_context.mcp_meta_tool_options
+    expect(meta.enabled).toBe(true)
+    const tools = meta.mcp_descriptors[0].tools
+    expect(meta.mcp_descriptors[0].server_name).toBe("opencode")
+    expect(tools.map((tool: { tool_name: string }) => tool.tool_name)).toEqual(["grep", "read"])
+    expect(tools[0].description ?? "").toBe("")
+    expect(Buffer.from(tools[0].input_schema ?? []).length).toBe(0)
   })
 
-  it("omits LIVE request_context unless explicitly supplied (proxy posture)", () => {
-    const tools = [
-      { name: "read", description: "Read", inputSchema: { type: "object" } },
-      { name: "bash", description: "Shell", inputSchema: { type: "object" } },
-    ]
+  it("omits request_context when the turn has no system text and no tools", () => {
     const data = buildRunRequest({
       text: "hi",
       modelId: "m",
       conversationId: "c",
-      tools,
     })
     const decoded = decodeMessage<any>("AgentClientMessage", data)
     expect(decoded.run_request.action.user_message_action.request_context == null).toBe(true)
-    // Tools still land on prewarm #4.
-    expect(decoded.run_request.mcp_tools?.mcp_tools).toHaveLength(2)
+    expect(decoded.run_request.mcp_tools?.mcp_tools ?? []).toHaveLength(0)
   })
 
   it("sends an empty mcp_tools list when no tools are given", () => {
@@ -190,6 +186,29 @@ describe("buildRunRequest images", () => {
     expect(image.uuid.length).toBeGreaterThan(0)
     const bytes = typeof image.data === "string" ? Buffer.from(image.data, "base64") : Buffer.from(image.data)
     expect(Buffer.compare(bytes, png)).toBe(0)
+  })
+})
+
+describe("buildMcpStateResult", () => {
+  it("returns the caller schema for the requested server", () => {
+    const descriptors = toolsToDescriptors([
+      {
+        name: "place_order",
+        description: "Submit one warehouse order.",
+        inputSchema: {
+          type: "object",
+          properties: { sku: { type: "string" }, qty: { type: "integer" } },
+          required: ["sku", "qty"],
+        },
+      },
+    ])
+    const data = buildMcpStateResult(7, { server_identifiers: ["opencode"] }, descriptors)
+    const decoded = decodeMessage<any>("AgentClientMessage", data)
+    const tool = decoded.exec_client_message.mcp_state_exec_result.success.servers[0].tools[0]
+    expect(tool.tool_name).toBe("place_order")
+    expect(tool.provider_identifier).toBe("opencode")
+    expect(tool.description).toBe("Submit one warehouse order.")
+    expect(tool.input_schema.length).toBeGreaterThan(0)
   })
 })
 

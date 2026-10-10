@@ -175,8 +175,10 @@ export type CursorSession = {
   pending: Map<number, PendingExec>
   /** KV blob store: blob_id (hex) → data, for Cursor's out-of-band payload channel. */
   blobs: Map<string, Uint8Array>
-  /** McpToolDefinition list advertised this turn — derived from caller tools only. */
+  /** McpToolDefinition list for exec #36. The Run itself advertises names only. */
   toolDescriptors: Array<Record<string, unknown>>
+  /** Request context sent on this Run. Exec #10 echoes it. */
+  requestContext: Record<string, unknown>
   /**
    * False when OpenCode passed no tools (compaction/summary) or toolChoice "none".
    * Cursor may still fire native Grep/etc.; we must refuse those on the Run

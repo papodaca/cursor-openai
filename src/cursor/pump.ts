@@ -64,7 +64,6 @@ const RUN_REPLY_FAILED = "CURSOR_RUN_REPLY_FAILED"
  * Schema-minimal empty RequestContext (zero populated fields) for the
  * must-reply exec #10 / #36 control-plane probes.
  */
-const EMPTY_REQUEST_CONTEXT: Record<string, unknown> = {}
 
 type ResponseRequiredChannel = "exec" | "kv" | "interaction" | "multiple"
 const RESPONSE_REQUIRED_CHANNEL_BY_FIELD = new Map<
@@ -536,8 +535,8 @@ export async function pump(
       const esmId = (esm.id as number) ?? 0
       if (esm.request_context_args) {
         try {
-          session.stream.write(buildRequestContextResult(esmId, EMPTY_REQUEST_CONTEXT))
-          trace(`exec request_context: replied empty id=${esmId}`)
+          session.stream.write(buildRequestContextResult(esmId, session.requestContext))
+          trace(`exec request_context: replied id=${esmId}`)
         } catch {
           failRunProtocol("Cursor request-context reply failed", RUN_REPLY_FAILED)
         }
@@ -547,7 +546,7 @@ export async function pump(
           ? stateArgs.server_identifiers.join(",")
           : ""
         try {
-          session.stream.write(buildMcpStateResult(esmId, stateArgs, EMPTY_REQUEST_CONTEXT))
+          session.stream.write(buildMcpStateResult(esmId, stateArgs, session.toolDescriptors))
           trace(`exec mcp_state: replied id=${esmId} requested=[${requested}]`)
         } catch {
           failRunProtocol("Cursor MCP-state reply failed", RUN_REPLY_FAILED)

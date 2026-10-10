@@ -46,8 +46,12 @@ describe("proxy posture: no host context injection", () => {
     ])
     const context = action.request_context
     expect(context.env ?? null).toBeNull()
-    expect(context.mcp_meta_tool_options ?? null).toBeNull()
     expect(context.hooks_additional_context ?? "").toBe("")
+    const advertised = context.mcp_meta_tool_options.mcp_descriptors[0].tools
+    expect(advertised.map((tool: { tool_name: string }) => tool.tool_name)).toEqual(["read"])
+    expect(advertised[0].description ?? "").toBe("")
+    expect(Buffer.from(advertised[0].input_schema ?? []).length).toBe(0)
+    expect(decoded.run_request.mcp_tools?.mcp_tools ?? []).toHaveLength(0)
     for (const key of ["git_repos", "project_layouts", "repository_info", "agent_skills", "tools"]) {
       expect(context[key] ?? []).toEqual([])
     }
