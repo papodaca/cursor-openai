@@ -163,6 +163,30 @@ describe("buildRunRequest", () => {
   })
 })
 
+describe("buildRunRequest images", () => {
+  it("attaches selected image bytes on the user message", () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    )
+    const data = buildRunRequest({
+      text: "What is this?",
+      modelId: "vision-model",
+      conversationId: "conv-img",
+      images: [{ data: new Uint8Array(png), filename: "shot.png", mimeType: "image/png" }],
+    })
+    const decoded = decodeMessage<any>("AgentClientMessage", data)
+    const image =
+      decoded.run_request.action.user_message_action.user_message.selected_context.selected_images[0]
+    expect(image.mime_type).toBe("image/png")
+    expect(image.path).toBe("shot.png")
+    expect(typeof image.uuid).toBe("string")
+    expect(image.uuid.length).toBeGreaterThan(0)
+    const bytes = typeof image.data === "string" ? Buffer.from(image.data, "base64") : Buffer.from(image.data)
+    expect(Buffer.compare(bytes, png)).toBe(0)
+  })
+})
+
 describe("buildHeartbeat", () => {
   it("encodes a heartbeat ClientMessage", () => {
     const data = buildHeartbeat()

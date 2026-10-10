@@ -374,6 +374,12 @@ describe("toCallOptions", () => {
       })
     }
 
+    const user = options.prompt.find((m) => m.role === "user")
+    expect(user?.role).toBe("user")
+    if (user?.role === "user") {
+      expect(user.content).toEqual([{ type: "text", text: "Weather in SF?" }])
+    }
+
     const tool = options.prompt.find((m) => m.role === "tool")
     expect(tool?.role).toBe("tool")
     if (tool?.role === "tool") {
@@ -383,6 +389,36 @@ describe("toCallOptions", () => {
         toolName: "get_weather",
         output: { type: "text", value: "68F and sunny" },
       })
+    }
+  })
+
+  test("maps image_url parts onto file parts", () => {
+    const options = toCallOptions({
+      model: "composer-2.5",
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content: "",
+          images: [
+            { url: "data:image/png;base64,aaaa", mediaType: "image/png" },
+            { url: "https://example.com/cat.png", mediaType: "image/*" },
+          ],
+        },
+      ],
+    })
+    const user = options.prompt[0]
+    expect(user?.role).toBe("user")
+    if (user?.role !== "user") return
+    expect(user.content[0]).toEqual({
+      type: "file",
+      mediaType: "image/png",
+      data: "data:image/png;base64,aaaa",
+    })
+    expect(user.content[1]).toMatchObject({ type: "file", mediaType: "image/*" })
+    if (user.content[1]?.type === "file") {
+      expect(user.content[1].data).toBeInstanceOf(URL)
+      expect(String(user.content[1].data)).toBe("https://example.com/cat.png")
     }
   })
 })

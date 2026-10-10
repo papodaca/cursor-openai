@@ -106,10 +106,15 @@ export async function refreshAccessToken(
 ): Promise<TokenPair> {
   let res: Response
   try {
-    res = await fetch(`${apiBaseURL.replace(/\/$/, "")}/auth/token`, {
+    // Cursor has no POST /auth/token. Refresh is the same exchange OpenCode uses:
+    // Bearer refresh token, empty JSON body.
+    res = await fetch(`${apiBaseURL.replace(/\/$/, "")}/auth/exchange_user_api_key`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken }),
+      headers: {
+        Authorization: `Bearer ${refreshToken}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
     })
   } catch (cause) {
     throw new AuthRefreshError("Token refresh request failed", cause)
@@ -128,13 +133,16 @@ export async function refreshAccessToken(
     throw new AuthRefreshError("Token refresh returned malformed JSON", cause)
   }
 
-  if (typeof body.accessToken !== "string" || typeof body.refreshToken !== "string") {
+  if (typeof body.accessToken !== "string") {
     throw new AuthRefreshError("Refresh response missing tokens")
   }
 
   return {
     accessToken: body.accessToken,
-    refreshToken: body.refreshToken,
+    refreshToken:
+      typeof body.refreshToken === "string" && body.refreshToken.length > 0
+        ? body.refreshToken
+        : refreshToken,
   }
 }
 

@@ -10,6 +10,7 @@ import { listModels, normalizeModelId } from "./models.ts"
 import {
   decodeJwtExpiryMs,
   parseAuthFile,
+  refreshAccessToken,
 } from "./auth-session.ts"
 
 const baseConfig: AppConfig = {
@@ -36,6 +37,66 @@ describe("parseChatCompletionRequest", () => {
     expect(req.model).toBe("composer-2.5")
     expect(req.stream).toBe(false)
     expect(req.messages[1]?.content).toBe("Hi")
+  })
+
+  test("parses user image_url parts", () => {
+    const req = parseChatCompletionRequest({
+      model: "composer-2.5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is this?" },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,aaaa", detail: "high" },
+            },
+            { type: "image_url", image_url: "https://example.com/a.jpg" },
+          ],
+        },
+      ],
+    })
+    expect(req.messages[0]).toMatchObject({
+      role: "user",
+      content: "What is this?",
+      images: [
+        { url: "data:image/png;base64,aaaa", mediaType: "image/png" },
+        { url: "https://example.com/a.jpg", mediaType: "image/*" },
+      ],
+    })
+  })
+
+  test("rejects non-image content parts and image_url on assistant messages", () => {
+    expect(() =>
+      parseChatCompletionRequest({
+        model: "composer-2.5",
+        messages: [{ role: "user", content: [{ type: "input_audio", input_audio: {} }] }],
+      }),
+    ).toThrow(/image_url/)
+
+    expect(() =>
+      parseChatCompletionRequest({
+        model: "composer-2.5",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: "file:///tmp/x.png" } }],
+          },
+        ],
+      }),
+    ).toThrow(/http\(s\)/)
+
+    expect(() =>
+      parseChatCompletionRequest({
+        model: "composer-2.5",
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "image_url", image_url: { url: "https://example.com/a.png" } }],
+          },
+        ],
+      }),
+    ).toThrow(ApiError)
   })
 
   test("parses tools and tool messages", () => {
@@ -190,6 +251,34 @@ describe("auth file helpers", () => {
     const jwt = `x.${payload}.y`
     expect(decodeJwtExpiryMs(jwt)).toBe(1_700_000_000_000)
   })
+
+  test("refreshAccessToken exchanges the refresh token at Cursor's endpoint", async () => {
+    let seen: { auth?: string | null; body?: string; path?: string } = {}
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        seen = {
+          auth: req.headers.get("authorization"),
+          body: await req.text(),
+          path: new URL(req.url).pathname,
+        }
+        return Response.json({ accessToken: "new-access-token-value-xxxx" })
+      },
+    })
+    try {
+      const pair = await refreshAccessToken(
+        sampleRefresh,
+        `http://127.0.0.1:${server.port}`,
+      )
+      expect(seen.path).toBe("/auth/exchange_user_api_key")
+      expect(seen.auth).toBe(`Bearer ${sampleRefresh}`)
+      expect(seen.body).toBe("{}")
+      expect(pair.accessToken).toBe("new-access-token-value-xxxx")
+      expect(pair.refreshToken).toBe(sampleRefresh)
+    } finally {
+      server.stop(true)
+    }
+  })
 })
 
 describe("normalizeModelId", () => {
@@ -219,6 +308,14 @@ describe("mapProviderError", () => {
     expect(mapped).toBeInstanceOf(ApiError)
     expect(mapped?.status).toBe(404)
     expect(mapped?.code).toBe("model_not_found")
+  })
+
+  test("maps image input failures to 400", () => {
+    const err = new Error("Cursor model composer-2.5 does not support image input.")
+    err.name = "CursorImageInputError"
+    const mapped = mapProviderError(err)
+    expect(mapped?.status).toBe(400)
+    expect(mapped?.code).toBe("unsupported_content")
   })
 })
 

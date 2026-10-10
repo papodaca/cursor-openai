@@ -15,9 +15,14 @@ npm package `cursor-opencode-provider`.
 | License | MIT (full text below) |
 
 Host-adapter behavior from upstream (workspace/context collectors, system-prompt
-injection, local filesystem exec intercepts, OpenCode plugin entries, pricing /
-image-input chrome) has been deleted. What remains is transport, framing, and
-message/stream translation — see `docs/plans/04-vendored-cursor-protocol.md`.
+injection, local filesystem exec intercepts, OpenCode plugin entries, pricing,
+and the upstream image-input module) has been deleted. What remains is
+transport, framing, and message/stream translation. See
+`docs/plans/04-vendored-cursor-protocol.md`.
+
+This repo's own OpenAI `image_url` mapping lives in `src/cursor/image-input.ts`
+and attaches bytes to `UserMessage.selected_context`. Keep that file on sync.
+It is not the deleted upstream host module.
 
 ## Forward-sync rule
 
@@ -30,7 +35,8 @@ When a newer `cursor-opencode-provider` tag ships that might carry protocol fixe
    - **Take:** protocol / message / session / tools / framing / stream-safety fixes
      that affect the SDK `LanguageModelV3` path.
    - **Leave:** host-chrome — OpenCode plugin/opencode2, pricing, model metadata,
-     image input, workspace/session-directory tracking, MCP resource execution,
+     the upstream image-input module (keep this repo's `src/cursor/image-input.ts`),
+     workspace/session-directory tracking, MCP resource execution,
      local FS exec intercepts, context collectors / prompt injection.
 3. Re-run `bun run typecheck` and `bun test src` (especially
    `src/cursor/__tests__/no-injection.test.ts` and `request.test.ts`).

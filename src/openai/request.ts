@@ -9,6 +9,12 @@ export type OpenAIToolCall = {
   }
 }
 
+export type OpenAIUserImage = {
+  /** data:image/...;base64,... or an http(s) URL. */
+  url: string
+  mediaType: string
+}
+
 export type OpenAIChatMessage =
   | {
       role: "system"
@@ -17,6 +23,7 @@ export type OpenAIChatMessage =
   | {
       role: "user"
       content: string
+      images?: OpenAIUserImage[]
     }
   | {
       role: "assistant"
@@ -79,14 +86,104 @@ function extractTextContent(content: unknown, role: string): string {
       texts.push(part.text)
       continue
     }
+    const type = typeof part.type === "string" ? part.type : "unknown"
     throw new ApiError(
-      `Unsupported content part type in role "${role}" (text-only content parts).`,
+      `Unsupported content part type "${type}" in role "${role}". User messages accept text and image_url.`,
       400,
       "invalid_request_error",
       "unsupported_content",
     )
   }
   return texts.join("")
+}
+
+function parseImageUrl(part: Record<string, unknown>): OpenAIUserImage {
+  const imageUrl = part.image_url
+  const url =
+    typeof imageUrl === "string"
+      ? imageUrl
+      : isPlainObject(imageUrl) && typeof imageUrl.url === "string"
+        ? imageUrl.url
+        : undefined
+  if (typeof url !== "string" || url.trim() === "") {
+    throw new ApiError(
+      "image_url.url is required.",
+      400,
+      "invalid_request_error",
+      "unsupported_content",
+    )
+  }
+  const trimmed = url.trim()
+  if (trimmed.startsWith("data:")) {
+    const comma = trimmed.indexOf(",")
+    const meta = comma >= 0 ? trimmed.slice(5, comma) : ""
+    const pieces = meta.split(";")
+    const mime = pieces[0]?.toLowerCase() ?? ""
+    if (!mime.startsWith("image/") || !pieces.includes("base64") || comma < 0) {
+      throw new ApiError(
+        "image_url data URLs must be base64-encoded image/* payloads.",
+        400,
+        "invalid_request_error",
+        "unsupported_content",
+      )
+    }
+    return { url: trimmed, mediaType: mime }
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    throw new ApiError(
+      "image_url.url must be an http(s) URL or a base64 image data URL.",
+      400,
+      "invalid_request_error",
+      "unsupported_content",
+    )
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new ApiError(
+      "image_url.url must be an http(s) URL or a base64 image data URL.",
+      400,
+      "invalid_request_error",
+      "unsupported_content",
+    )
+  }
+  return { url: trimmed, mediaType: "image/*" }
+}
+
+function extractUserMessage(content: unknown): { content: string; images?: OpenAIUserImage[] } {
+  if (typeof content === "string") return { content }
+  if (!Array.isArray(content)) {
+    throw new ApiError('Message role "user" must have string or array content.', 400)
+  }
+
+  const texts: string[] = []
+  const images: OpenAIUserImage[] = []
+  for (const part of content) {
+    if (!isPlainObject(part)) {
+      throw new ApiError('Invalid content part in role "user".', 400)
+    }
+    if (part.type === "text" && typeof part.text === "string") {
+      texts.push(part.text)
+      continue
+    }
+    if (part.type === "image_url") {
+      images.push(parseImageUrl(part))
+      continue
+    }
+    const type = typeof part.type === "string" ? part.type : "unknown"
+    throw new ApiError(
+      `Unsupported content part type "${type}" in role "user". User messages accept text and image_url.`,
+      400,
+      "invalid_request_error",
+      "unsupported_content",
+    )
+  }
+  return {
+    content: texts.join(""),
+    ...(images.length > 0 ? { images } : {}),
+  }
 }
 
 function parseToolCall(raw: unknown): OpenAIToolCall {
@@ -233,10 +330,18 @@ export function parseChatCompletionRequest(body: unknown): OpenAIChatCompletionR
     }
     const role = raw.role
 
-    if (role === "system" || role === "user") {
+    if (role === "system") {
       messages.push({
         role,
         content: extractTextContent(raw.content, role),
+      })
+      continue
+    }
+
+    if (role === "user") {
+      messages.push({
+        role,
+        ...extractUserMessage(raw.content),
       })
       continue
     }

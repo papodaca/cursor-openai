@@ -1,3 +1,4 @@
+import type { CursorImageInput } from "../image-input.js"
 import { encodeMessage, getMessageTypes } from "./messages.js"
 import { toolsToDescriptors, type OpencodeToolDef } from "./tools.js"
 
@@ -8,6 +9,8 @@ export type SeedHistoryMessage = {
 
 export type RunRequestInput = {
   text: string
+  /** Raster images for UserMessage.selected_context.selected_images. */
+  images?: CursorImageInput[]
   modelId: string
   conversationId: string
   systemPrompt?: string
@@ -89,6 +92,16 @@ export function buildRunRequest(input: RunRequestInput): Uint8Array {
   const userMessage: Record<string, unknown> = {
     text: input.text,
     message_id: msgId,
+  }
+  if (input.images && input.images.length > 0) {
+    userMessage.selected_context = {
+      selected_images: input.images.map((image) => ({
+        data: image.data,
+        uuid: crypto.randomUUID(),
+        path: image.filename,
+        mime_type: image.mimeType,
+      })),
+    }
   }
   const userMessageAction: Record<string, unknown> = { user_message: userMessage }
   if (requestContext) userMessageAction.request_context = requestContext

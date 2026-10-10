@@ -176,6 +176,34 @@ Then append the assistant `tool_calls` message and your `role: "tool"` result(s)
 
 OpenAI JS SDK tool loop works with `baseURL=http://localhost:8787/v1` the same way as against OpenAI.
 
+## Image input
+
+User messages can mix text with OpenAI `image_url` parts. A part is a base64 data URL (`data:image/png;base64,...`) or an `http`/`https` URL. The proxy fetches URL images, checks the bytes are png, jpeg, gif, or webp, and sends them on the Cursor user message. Combined size is capped at 20 MiB.
+
+When the model catalog says `supportsImages: false`, the request fails with HTTP 400. When a catalog entry leaves that flag unset, the proxy forwards the image and Cursor accepts or rejects it.
+
+`image_url` belongs on user messages. System, assistant, and tool messages stay text. Other part types are rejected.
+
+`scripts/test-image.sh photo.png` sends the same kind of request to a running server. `MODEL`, `API_KEY` (or `PROXY_KEY`), and `BASE_URL` override the defaults (`composer-2.5`, `local-dev-secret`, `http://127.0.0.1:8787`). An `http`/`https` URL can stand in for the file.
+
+```bash
+curl -s http://localhost:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PROXY_KEY" \
+  -d '{
+    "model": "composer-2.5",
+    "messages": [{
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "What is in this image?" },
+        { "type": "image_url", "image_url": { "url": "https://example.com/cat.png" } }
+      ]
+    }]
+  }'
+```
+
+On a fresh conversation, images from earlier user messages in the same request are included. After Cursor returns a checkpoint, later turns send only images on the newest user message.
+
 ## Examples
 
 ```bash

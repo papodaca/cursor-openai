@@ -60,6 +60,7 @@ import {
   type V3Part,
 } from "./prompt.js"
 import { pumpWithRecovery, type CursorRunRecovery } from "./pump.js"
+import { extractPromptImages, promptHasImages, type CursorImageInput, CursorImageInputError } from "./image-input.js"
 
 export type CreateCursorAdapterOptions = {
   /** Plain Cursor access token (oauth refresh is the caller's job). */
@@ -254,17 +255,34 @@ async function startSession(
   })
   const maxMode = hintMaxMode || paramsImplyMaxMode(parameterValues)
 
+  const conversationState = resuming
+    ? recovery.checkpoint
+    : (bound.reset ? undefined : getCheckpoint(conversationId))
+  const includeHistoryImages = !conversationState
+  if (
+    !resuming &&
+    modelInfo?.supportsImages === false &&
+    promptHasImages(prompt, includeHistoryImages)
+  ) {
+    throw new CursorImageInputError(`Cursor model ${cursorModelId} does not support image input.`)
+  }
+  const images: CursorImageInput[] =
+    resuming || modelInfo?.supportsImages === false
+      ? []
+      : await extractPromptImages(prompt, {
+          includeHistory: includeHistoryImages,
+          signal: callOptions.abortSignal,
+        })
+
   const stream = await bidiRunStream(token, {
     baseURL: agentBaseUrl,
     headers: options.headers,
     cacheDir: options.cacheDir,
   })
   const toolDescriptors = tools.length > 0 ? toolsToDescriptors(tools) : []
-  const conversationState = resuming
-    ? recovery.checkpoint
-    : (bound.reset ? undefined : getCheckpoint(conversationId))
   const reqBytes = buildRunRequest({
     text: userText,
+    images,
     modelId: cursorModelId,
     conversationId,
     systemPrompt: conversationState ? undefined : systemPrompt,
@@ -291,7 +309,7 @@ async function startSession(
     `outbound Run: model=${cursorModelId} wireModel=${modelId} conversationId=${conversationId} ` +
       `params=${JSON.stringify(parameterValues ?? [])} ` +
       `maxMode=${maxMode} systemPromptLen=${systemPrompt?.length ?? 0} ` +
-      `tools=${tools.length} ` +
+      `tools=${tools.length} images=${images.length} ` +
       `availableModels=${_availableModels?.length ?? 0} userTextLen=${userText.length} ` +
       `historyMsgs=${history.length} historyChars=${historyChars} ` +
       `checkpointLen=${conversationState?.length ?? 0} reset=${bound.reset} ` +

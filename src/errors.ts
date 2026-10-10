@@ -33,6 +33,10 @@ export function mapProviderError(err: unknown): ApiError | null {
     )
   }
 
+  if (err.name === "CursorImageInputError") {
+    return new ApiError(message || "Invalid image input.", 400, "invalid_request_error", "unsupported_content")
+  }
+
   if (err.name === "CursorAuthError" || code === "unauthenticated" || code === "permission_denied") {
     return new ApiError(
       message || "Cursor authentication failed; refresh oauth credentials.",

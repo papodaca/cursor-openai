@@ -14,6 +14,7 @@ import type {
   OpenAIFunctionTool,
   OpenAIToolCall,
   OpenAIToolChoice,
+  OpenAIUserImage,
 } from "./openai/request.ts"
 import {
   chatCompletionChunk,
@@ -88,7 +89,7 @@ function toPrompt(req: OpenAIChatCompletionRequest): LanguageModelV3Prompt {
     if (message.role === "user") {
       return {
         role: "user" as const,
-        content: [{ type: "text" as const, text: message.content }],
+        content: userContent(message.content, message.images),
       }
     }
     if (message.role === "assistant") {
@@ -129,6 +130,29 @@ function toPrompt(req: OpenAIChatCompletionRequest): LanguageModelV3Prompt {
       ],
     }
   })
+}
+
+function userContent(
+  text: string,
+  images: OpenAIUserImage[] | undefined,
+): Array<
+  | { type: "text"; text: string }
+  | { type: "file"; mediaType: string; data: string | URL }
+> {
+  const content: Array<
+    | { type: "text"; text: string }
+    | { type: "file"; mediaType: string; data: string | URL }
+  > = []
+  if (text.length > 0) content.push({ type: "text", text })
+  for (const image of images ?? []) {
+    content.push({
+      type: "file",
+      mediaType: image.mediaType,
+      data: image.url.startsWith("data:") ? image.url : new URL(image.url),
+    })
+  }
+  if (content.length === 0) content.push({ type: "text", text: "" })
+  return content
 }
 
 export function toCallOptions(
