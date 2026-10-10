@@ -112,7 +112,7 @@ describe("buildRunRequest", () => {
     expect(params[0].value).toBe("high")
   })
 
-  it("delivers system prompt via conversation_state, not custom_system_prompt", () => {
+  it("delivers system prompt as an always-apply rule, not custom_system_prompt", () => {
     const data = buildRunRequest({
       text: "Hi",
       modelId: "test-model",
@@ -126,12 +126,15 @@ describe("buildRunRequest", () => {
       "ConversationStateStructure",
       decoded.run_request.conversation_state,
     )
-    const msgs = cs.root_prompt_messages_json ?? []
-    expect(msgs).toHaveLength(1)
-    expect(JSON.parse(msgs[0])).toEqual({
-      role: "system",
-      content: "You are a helpful assistant.",
-    })
+    expect(cs.root_prompt_messages_json ?? []).toHaveLength(0)
+    const rules = decoded.run_request.action.user_message_action.request_context.rules
+    expect(rules).toEqual([
+      {
+        full_path: "System instructions",
+        content: "You are a helpful assistant.",
+        type: { global: {} },
+      },
+    ])
   })
 
   it("generates a unique message_id each call", () => {
@@ -159,7 +162,10 @@ describe("buildRunRequest", () => {
       "ConversationStateStructure",
       decoded.run_request.conversation_state,
     )
-    expect(cs.root_prompt_messages_json).toHaveLength(1)
+    expect(cs.root_prompt_messages_json ?? []).toHaveLength(0)
+    expect(
+      decoded.run_request.action.user_message_action.request_context.rules[0].content,
+    ).toBe("Be brief.")
   })
 })
 

@@ -3,7 +3,6 @@ import { readFileSync, readdirSync, statSync } from "node:fs"
 import path from "node:path"
 import { buildRunRequest } from "../protocol/request.ts"
 import { decodeMessage } from "../protocol/messages.ts"
-import { readAllFields } from "../protocol/struct.ts"
 
 const CURSOR_ROOT = path.resolve(import.meta.dir, "..")
 
@@ -19,7 +18,7 @@ function walkTsFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe("proxy posture: no host context injection", () => {
-  it("omits request_context from a default Run when no requestContext is supplied", () => {
+  it("sends the caller system prompt as the only request_context field", () => {
     const systemPrompt = "You are a verbatim client system prompt."
     const data = buildRunRequest({
       text: "Hello from the client",
@@ -37,32 +36,27 @@ describe("proxy posture: no host context injection", () => {
 
     const decoded = decodeMessage<any>("AgentClientMessage", data)
     const action = decoded.run_request.action.user_message_action
-    expect(action.request_context == null).toBe(true)
     expect(action.user_message.text).toBe("Hello from the client")
-
-    // Struct-level: UserMessageAction must not carry field #2 (request_context).
-    // AgentClientMessage.run_request=#1 → AgentRunRequest.action=#2 →
-    // ConversationAction.user_message_action=#1 → UserMessageAction.
-    const runRequestBytes = readAllFields(data).find((field) => field.fn === 1)?.bytes
-    expect(runRequestBytes).toBeDefined()
-    const conversationActionBytes = readAllFields(runRequestBytes!).find((field) => field.fn === 2)?.bytes
-    expect(conversationActionBytes).toBeDefined()
-    const userMessageActionBytes = readAllFields(conversationActionBytes!).find((field) => field.fn === 1)?.bytes
-    expect(userMessageActionBytes).toBeDefined()
-    // UserMessageAction: user_message=#1, request_context=#2
-    const umaFields = readAllFields(userMessageActionBytes!)
-    expect(umaFields.some((field) => field.fn === 2)).toBe(false)
+    expect(action.request_context.rules).toEqual([
+      {
+        full_path: "System instructions",
+        content: systemPrompt,
+        type: { global: {} },
+      },
+    ])
+    const context = action.request_context
+    expect(context.env ?? null).toBeNull()
+    expect(context.mcp_meta_tool_options ?? null).toBeNull()
+    expect(context.hooks_additional_context ?? "").toBe("")
+    for (const key of ["git_repos", "project_layouts", "repository_info", "agent_skills", "tools"]) {
+      expect(context[key] ?? []).toEqual([])
+    }
 
     const cs = decodeMessage<any>(
       "ConversationStateStructure",
       decoded.run_request.conversation_state,
     )
-    const msgs = cs.root_prompt_messages_json ?? []
-    expect(msgs).toHaveLength(1)
-    expect(JSON.parse(msgs[0])).toEqual({
-      role: "system",
-      content: systemPrompt,
-    })
+    expect(cs.root_prompt_messages_json ?? []).toHaveLength(0)
   })
 
   it("does not change emitted Run bytes when process.cwd() changes", () => {

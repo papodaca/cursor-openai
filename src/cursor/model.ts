@@ -285,7 +285,7 @@ async function startSession(
     images,
     modelId: cursorModelId,
     conversationId,
-    systemPrompt: conversationState ? undefined : systemPrompt,
+    systemPrompt,
     history: conversationState ? undefined : history,
     conversationState,
     parameterValues,

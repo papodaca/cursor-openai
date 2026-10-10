@@ -946,9 +946,32 @@ export function createMessageTypes(): protobuf.Root {
     { id: 21, name: "process_working_directory", type: "string" },
   ])
 
+  // Cursor applies a rule by its type. `global` is the CLI always-apply case.
+  // An untyped rule is only attachable on request, so its content never reaches
+  // the model on its own.
+  addType(root, "CursorRuleTypeGlobal", [])
+  addType(root, "CursorRuleTypeFileGlobs", [
+    { id: 1, name: "globs", type: "string", repeated: true },
+  ])
+  addType(root, "CursorRuleTypeAgentFetched", [
+    { id: 1, name: "description", type: "string" },
+  ])
+  addType(root, "CursorRuleTypeManuallyAttached", [])
+  addType(
+    root,
+    "CursorRuleType",
+    [
+      { id: 1, name: "global", type: "CursorRuleTypeGlobal" },
+      { id: 2, name: "file_globbed", type: "CursorRuleTypeFileGlobs" },
+      { id: 3, name: "agent_fetched", type: "CursorRuleTypeAgentFetched" },
+      { id: 4, name: "manually_attached", type: "CursorRuleTypeManuallyAttached" },
+    ],
+    [{ name: "type", fields: ["global", "file_globbed", "agent_fetched", "manually_attached"] }],
+  )
   addType(root, "CursorRule", [
     { id: 1, name: "full_path", type: "string" },
     { id: 2, name: "content", type: "string" },
+    { id: 3, name: "type", type: "CursorRuleType" },
   ])
 
   addType(root, "RepositoryIndexingInfo", [

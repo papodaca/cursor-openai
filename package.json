@@ -12,6 +12,8 @@
     "dev": "bun --watch index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test src",
+    "live": "bun run scripts/live-api.ts",
+    "live:tools": "bun run scripts/live-tools.ts",
     "commit-workflow": "bun run scripts/commit-workflow.ts"
   },
   "type": "module",

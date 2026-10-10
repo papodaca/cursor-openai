@@ -24,7 +24,7 @@ export type RunRequestInput = {
    * Opaque ConversationStateStructure bytes from the last
    * conversation_checkpoint_update for this conversation_id. When set, echoed
    * as AgentRunRequest.conversation_state (CLI parity). When absent, a seed
-   * state with the system prompt (or empty) is built for turn 1.
+   * state carrying only `history` (or empty) is built for turn 1.
    */
   conversationState?: Uint8Array
   parameterValues?: Array<{ id: string; value: string }>
@@ -39,34 +39,42 @@ export type RunRequestInput = {
   action?: "user" | "resume"
 }
 
+/** Label on the always-apply rule. Not a file path. */
+export const SYSTEM_INSTRUCTIONS_RULE_PATH = "System instructions"
+
+/**
+ * Cursor ignores a client-authored `system` entry in
+ * `root_prompt_messages_json`, and rejects `custom_system_prompt` for normal
+ * accounts. The CLI sends host instructions as an always-apply rule
+ * (`CursorRuleType.global`).
+ */
+export function systemInstructionsRule(text: string): Record<string, unknown> {
+  return {
+    full_path: SYSTEM_INSTRUCTIONS_RULE_PATH,
+    content: text,
+    type: { global: {} },
+  }
+}
+
 /**
  * Seed ConversationStateStructure for the first turn (no checkpoint yet).
  *
- * OpenCode needs a system prompt channel; we put it in root_prompt_messages_json
- * as a JSON chat message. After the first checkpoint arrives we stop inventing
- * state and echo the server's opaque structure instead (CLI behavior).
+ * After the first checkpoint arrives we stop inventing state and echo the
+ * server's opaque structure instead. Compaction resets also use this seed,
+ * with `history` carrying prior turns so Cursor can continue without the old
+ * checkpoint.
  *
- * Compaction resets also use this seed, with `history` carrying OpenCode's
- * compacted prompt turns so Cursor can summarize without the old checkpoint.
- *
- * We deliberately do NOT use `AgentRunRequest.custom_system_prompt` (#8): that
- * field is the internal `--system-prompt` CLI override and the server rejects
- * it for normal accounts.
+ * System text is not seeded here. It travels as the always-apply rule from
+ * `systemInstructionsRule`.
  */
 export function buildSeedConversationState(input?: {
-  systemPrompt?: string
   history?: SeedHistoryMessage[]
 }): Uint8Array {
   const root = getMessageTypes()
   const type = root.lookupType("ConversationStateStructure")
   const messages: string[] = []
-  if (input?.systemPrompt && input.systemPrompt.length > 0) {
-    messages.push(JSON.stringify({ role: "system", content: input.systemPrompt }))
-  }
   for (const entry of input?.history ?? []) {
-    if (!entry.content) continue
-    // Avoid duplicating the system prompt when history also carries one.
-    if (entry.role === "system" && input?.systemPrompt) continue
+    if (!entry.content || entry.role === "system") continue
     messages.push(JSON.stringify({ role: entry.role, content: entry.content }))
   }
   const obj: Record<string, unknown> = {}
@@ -83,11 +91,14 @@ export function buildSeedConversationState(input?: {
 export function buildRunRequest(input: RunRequestInput): Uint8Array {
   const msgId = input.messageId ?? crypto.randomUUID()
 
-  // Advertise tools on AgentRunRequest.mcp_tools (#4). request_context is omitted
-  // unless a caller explicitly supplies one (proxy path never does).
+  // Advertise tools on AgentRunRequest.mcp_tools (#4). The only request_context
+  // this proxy adds on its own is the caller's system text as one global rule.
   const tools = input.tools ?? []
   const mcpTools = input.toolDescriptors ?? (tools.length > 0 ? toolsToDescriptors(tools) : [])
-  const requestContext = input.requestContext
+  const systemText = input.systemPrompt?.trim() ? input.systemPrompt : undefined
+  const requestContext = systemText
+    ? { ...input.requestContext, rules: [systemInstructionsRule(systemText)] }
+    : input.requestContext
 
   const userMessage: Record<string, unknown> = {
     text: input.text,
@@ -112,10 +123,7 @@ export function buildRunRequest(input: RunRequestInput): Uint8Array {
   const conversationState =
     input.conversationState && input.conversationState.length > 0
       ? input.conversationState
-      : buildSeedConversationState({
-          systemPrompt: input.systemPrompt,
-          history: input.history,
-        })
+      : buildSeedConversationState({ history: input.history })
 
   const runRequest: Record<string, unknown> = {
     conversation_id: input.conversationId,

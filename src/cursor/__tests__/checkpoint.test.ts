@@ -62,9 +62,12 @@ describe("buildRunRequest checkpoint echo", () => {
     expect(decoded.run_request.action.user_message_action.user_message.text).toBe(
       "follow up",
     )
+    expect(
+      decoded.run_request.action.user_message_action.request_context.rules[0].content,
+    ).toBe("Should not appear in state when checkpoint is set")
   })
 
-  it("seeds system prompt when no checkpoint is provided", () => {
+  it("puts the system prompt on the always-apply rule when no checkpoint is provided", () => {
     const data = buildRunRequest({
       text: "hi",
       modelId: "m",
@@ -76,10 +79,14 @@ describe("buildRunRequest checkpoint echo", () => {
       "ConversationStateStructure",
       decoded.run_request.conversation_state,
     )
-    expect(JSON.parse(cs.root_prompt_messages_json[0])).toEqual({
-      role: "system",
-      content: "Be brief.",
-    })
+    expect(cs.root_prompt_messages_json ?? []).toHaveLength(0)
+    expect(decoded.run_request.action.user_message_action.request_context.rules).toEqual([
+      {
+        full_path: "System instructions",
+        content: "Be brief.",
+        type: { global: {} },
+      },
+    ])
   })
 
   it("encodes checkpoint recovery as ResumeAction without replaying user text", () => {
