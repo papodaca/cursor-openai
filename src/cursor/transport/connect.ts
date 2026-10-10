@@ -383,6 +383,37 @@ function dropSession(origin: string, session: http2.ClientHttp2Session): void {
   if (_http2Sessions.get(origin) === session) _http2Sessions.delete(origin)
 }
 
+/**
+ * Stop offering `session` for new Runs and close it so in-flight streams can
+ * drain. Used by age rotation and a failed reuse ping. `destroy()` would abort
+ * every sibling Run on the session, and those Runs cannot be replayed after
+ * they have already produced output.
+ */
+function retireCachedSession(origin: string, session: http2.ClientHttp2Session): void {
+  dropSession(origin, session)
+  try { session.close() } catch { /* already closed */ }
+}
+
+/** Test cleanup. Production sessions stay cached for the process lifetime. */
+export function closeCachedHttp2SessionsForTests(): void {
+  for (const session of _http2Sessions.values()) {
+    _http2SessionListenerCleanup.get(session)?.()
+    try { session.destroy() } catch { /* already closed */ }
+  }
+  _http2Sessions.clear()
+  _http2Connecting.clear()
+}
+
+/** Cache a connected local session under an allowlisted Run origin. */
+export function cacheHttp2SessionForTests(
+  origin: string,
+  session: http2.ClientHttp2Session,
+): void {
+  installSessionInvalidation(origin, session)
+  _http2SessionCreatedAt.set(session, Date.now())
+  _http2Sessions.set(origin, session)
+}
+
 function timeoutMs(name: string, value: number | undefined, fallback: number): number {
   const resolved = value ?? fallback
   if (!Number.isSafeInteger(resolved) || resolved <= 0 || resolved > MAX_TIMER_MS) {
@@ -575,8 +606,7 @@ export function getSession(
       const createdAt = _http2SessionCreatedAt.get(existing) ?? 0
       if (!shouldReuseHttp2Session(existing, createdAt)) {
         trace(`h2 session rotate: origin=${origin} ageMs=${Math.max(0, Date.now() - createdAt)}`)
-        dropSession(origin, existing)
-        try { existing.close() } catch { /* already closed */ }
+        retireCachedSession(origin, existing)
       } else {
         try {
           await validateCachedSession(existing, pingTimeoutMs)
@@ -585,8 +615,9 @@ export function getSession(
             return existing
           }
         } catch (error) {
+          // Sibling Runs may still be streaming. destroy() would abort them.
           trace(`h2 cached session ping failed: origin=${origin} err=${(error as Error).message}`)
-          invalidateSession(origin, existing)
+          retireCachedSession(origin, existing)
         }
       }
     }

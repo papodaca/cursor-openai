@@ -14,6 +14,7 @@
     "test": "bun test src",
     "live": "bun run scripts/live-api.ts",
     "live:tools": "bun run scripts/live-tools.ts",
+    "live:parallel": "bun run scripts/live-parallel.ts",
     "commit-workflow": "bun run scripts/commit-workflow.ts"
   },
   "type": "module",
