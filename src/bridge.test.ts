@@ -252,6 +252,49 @@ describe("handleChatCompletion", () => {
     expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
   })
 
+  test("enqueue observer counts heartbeat frames and the done frame", async () => {
+    const model = delayedModel([
+      { afterMs: 90, part: { type: "text-delta", id: "0", delta: "late" } },
+      {
+        afterMs: 5,
+        part: {
+          type: "finish",
+          finishReason: { unified: "stop", raw: undefined },
+          usage: emptyUsage(),
+        },
+      },
+    ])
+    const lengths: unknown[] = []
+    let ready = 0
+    let settled = 0
+    const res = await handleChatCompletion({
+      model,
+      request: { ...baseRequest, stream: true },
+      heartbeatIntervalMs: 20,
+      streamObserver: {
+        enqueued(byteLength) {
+          lengths.push(byteLength)
+        },
+        ready() {
+          ready += 1
+        },
+        settled() {
+          settled += 1
+        },
+      },
+    })
+    expect(ready).toBe(1)
+    expect(settled).toBe(0)
+    const text = await res.text()
+    expect(settled).toBe(1)
+    expect(text).toContain(": keep-alive\n\n")
+    expect(text).toContain("data: [DONE]\n\n")
+    expect(lengths.length).toBeGreaterThan(0)
+    expect(lengths.every((value) => typeof value === "number")).toBe(true)
+    const total = lengths.reduce<number>((sum, value) => sum + (value as number), 0)
+    expect(total).toBe(new TextEncoder().encode(text).byteLength)
+  })
+
   test("stream without upstream silence has no heartbeat comments", async () => {
     const model = mockModel([
       { type: "text-delta", id: "0", delta: "Hi" },

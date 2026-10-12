@@ -7,6 +7,7 @@ RUN bun install --frozen-lockfile --production
 
 COPY tsconfig.json index.ts ./
 COPY src ./src
+COPY public ./public
 
 ENV PORT=8787 \
     CURSOR_AUTH_FILE=/data/auth.json \

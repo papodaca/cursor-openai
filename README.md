@@ -58,6 +58,7 @@ You can also point `--auth` at OpenCode's provider map (`~/.local/share/opencode
 | `--cache-dir` / `CURSOR_CACHE_DIR` | Host cache for `cursor-models.json` (default `~/.cache/opencode`; Docker `/data/cache`) |
 | `--api-base-url` / `CURSOR_API_BASE_URL` | Override Cursor API base |
 | `--agent-base-url` / `CURSOR_AGENT_BASE_URL` | Override Cursor agent Run host |
+| `--status-db` / `CURSOR_STATUS_DB` | SQLite file for the last 100 status rows (default `./status.sqlite`) |
 | `CURSOR_MODELS` | Comma-separated model ids for `GET /v1/models` |
 | `CURSOR_PROVIDER_DEBUG` | Provider wire debug (`1` / `true`) |
 
@@ -81,7 +82,7 @@ docker run --rm -p 8787:8787 \
   ghcr.io/papodaca/cursor-openai:latest
 ```
 
-Mount your Cursor oauth `auth.json` at `/data/auth.json` (the default `CURSOR_AUTH_FILE`). The container refreshes tokens and writes updates back to that file, so use a read-write mount. Model discovery writes `cursor-models.json` under `/data/cache` on first `GET /v1/models` (optional volume to keep it across restarts).
+Mount your Cursor oauth `auth.json` at `/data/auth.json` (the default `CURSOR_AUTH_FILE`). The container refreshes tokens and writes updates back to that file, so use a read-write mount. Model discovery writes `cursor-models.json` under `/data/cache` on first `GET /v1/models` (optional volume to keep it across restarts). Status rows go to `status.sqlite` in the working directory (`/app` in the image). Pass `--status-db /data/status.sqlite` or `CURSOR_STATUS_DB` and mount `/data` if that file should outlive the container.
 
 Build locally instead of pulling:
 
@@ -98,6 +99,8 @@ docker run --rm -p 8787:8787 \
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET` | `/health` | no | Liveness |
+| `GET` | `/status` | no | Empty status page. Call rows are not in the HTML. |
+| `GET` | `/status/events` | Bearer proxy key | Live snapshots of recent calls, the last 24 hours, and a year of daily counts |
 | `GET` | `/v1/models` | Bearer proxy key | Allowlist → Cursor AvailableModels (cached) → on-disk cache → fallback `composer-2.5` |
 | `POST` | `/v1/chat/completions` | Bearer proxy key | Stream + non-stream; optional `tools` / `tool_choice` |
 

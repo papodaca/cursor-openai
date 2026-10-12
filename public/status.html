@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Status</title>
+<style>
+  :root {
+    color-scheme: light;
+    --muted: #666;
+    --line: #e6e6e6;
+    --chart: #1f7a4d;
+    --chart-fill: rgba(31, 122, 77, 0.16);
+    --grid-0: #ebedf0;
+    --grid-1: #9be9a8;
+    --grid-2: #40c463;
+    --grid-3: #30a14e;
+    --grid-4: #216e39;
+    --dot-idle: #c8c8c8;
+    --dot-inset: inset 0 1px 1px rgba(255, 255, 255, 0.7);
+    --glow-ok: #1f9d55;
+    --glow-down: #d14343;
+    --glow-busy: #e0a100;
+    --glow: 0 0 6px;
+    --down-text: #b42318;
+    --surface: #fff;
+    --control-border: #ddd;
+    --rule: #ccc;
+    --rule-soft: #eee;
+  }
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0; background: #fff; color: #1a1a1a; }
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem 1rem;
+    padding: 0.7rem 1.25rem;
+    background: #f4f4f5;
+    border-bottom: 1px solid #e2e2e2;
+  }
+  .brand { font-weight: 600; }
+  .nav-end {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem 1rem;
+    margin-left: auto;
+  }
+  .lights { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .light {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0.28rem 0.7rem;
+    border: 1px solid #ddd;
+    border-radius: 999px;
+    background: #fff;
+    font-size: 0.82rem;
+  }
+  .dot {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    background: var(--dot-idle);
+    box-shadow: var(--dot-inset);
+  }
+  #bar[data-live="connected"] [data-lamp="link"] .dot { background: var(--glow-ok); box-shadow: var(--dot-inset), var(--glow) var(--glow-ok); }
+  #bar[data-live="disconnected"] [data-lamp="link"] .dot { background: var(--glow-down); box-shadow: var(--dot-inset), var(--glow) var(--glow-down); }
+  #bar[data-busy="1"] [data-lamp="busy"] .dot { background: var(--glow-busy); box-shadow: var(--dot-inset), var(--glow) var(--glow-busy); }
+  main { padding: 1.25rem 1.25rem 2rem; }
+  #key-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+  }
+  #key-form[hidden] { display: none; }
+  #key-form label { font-size: 13px; font-weight: 500; }
+  #proxy-key,
+  #key-form button {
+    appearance: none;
+    border: 1px solid var(--control-border);
+    border-radius: 0.75rem;
+    background: var(--surface);
+    color: inherit;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 0.28rem 0.7rem;
+  }
+  #key-form button { font-weight: 500; cursor: pointer; }
+  #proxy-key { font-weight: 400; min-width: 12rem; }
+  #error {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--down-text);
+  }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 36rem; }
+  th, td { text-align: left; padding: 0.45rem 0.6rem; vertical-align: top; border: 0; }
+  td { overflow-wrap: anywhere; }
+  th { white-space: nowrap; }
+  thead th {
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody td { border-bottom: 1px solid var(--rule-soft); }
+  th:nth-child(1),
+  td:nth-child(1) { font-variant-numeric: tabular-nums; }
+  th:nth-child(4),
+  th:nth-child(5),
+  td:nth-child(4),
+  td:nth-child(5) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  tbody td.empty {
+    color: var(--muted);
+    font-weight: 400;
+    text-align: left;
+  }
+  tbody tr.arrived td {
+    animation: row-arrive 2.8s ease-out;
+  }
+  @keyframes row-arrive {
+    from { background-color: rgba(63, 185, 80, 0.42); }
+    to { background-color: transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    tbody tr.arrived td { animation: none; }
+  }
+  h2 { font-size: 0.95rem; font-weight: 600; margin: 1.4rem 0 0.5rem; }
+  h2 span { margin-left: 0.35rem; font-weight: 400; color: var(--muted); }
+  .charts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 1.25rem 1.75rem;
+  }
+  .charts h2 { margin: 0 0 0.45rem; }
+  .chart-hour {
+    flex: 1 1 0;
+    min-width: min(100%, 18rem);
+  }
+  .chart-year { flex: 0 0 auto; max-width: 100%; }
+  .hourly-wrap { position: relative; }
+  #hourly { display: block; width: 100%; height: 9.25rem; }
+  #hourly .area { fill: var(--chart-fill); }
+  #hourly .line { fill: none; stroke: var(--chart); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  #hourly .axis { stroke: var(--line); stroke-width: 1; }
+  #hourly text { fill: var(--muted); font-size: 11px; font-family: inherit; }
+  #hourly circle.dot { fill: var(--chart); }
+  #hourly circle.hit { fill: transparent; cursor: pointer; }
+  #hourly-tip {
+    position: absolute;
+    z-index: 2;
+    pointer-events: none;
+    padding: 0.3rem 0.55rem;
+    border-radius: 0.5rem;
+    background: #1a1a1a;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.35;
+    white-space: nowrap;
+    transform: translate(-50%, calc(-100% - 8px));
+  }
+  #hourly-tip[hidden] { display: none; }
+  .grid-scroll { overflow-x: auto; padding-bottom: 0.25rem; }
+  .months {
+    position: relative;
+    height: 1rem;
+    margin: 0 0 4px 32px;
+    color: var(--muted);
+    font-size: 0.7rem;
+    line-height: 1rem;
+  }
+  .months span { position: absolute; top: 0; white-space: nowrap; }
+  .activity-body { display: flex; align-items: flex-start; width: max-content; }
+  .dow {
+    display: grid;
+    grid-template-rows: repeat(7, 11px);
+    gap: 3px;
+    width: 28px;
+    margin-right: 4px;
+    color: var(--muted);
+    font-size: 0.62rem;
+    line-height: 11px;
+  }
+  #grid {
+    display: grid;
+    grid-template-rows: repeat(7, 11px);
+    grid-auto-flow: column;
+    grid-auto-columns: 11px;
+    gap: 3px;
+  }
+  .cell, .swatch {
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    background: var(--grid-0);
+    box-shadow: inset 0 0 0 1px rgba(27, 31, 35, 0.06);
+  }
+  .cell[data-level="1"], .swatch[data-level="1"] { background: var(--grid-1); }
+  .cell[data-level="2"], .swatch[data-level="2"] { background: var(--grid-2); }
+  .cell[data-level="3"], .swatch[data-level="3"] { background: var(--grid-3); }
+  .cell[data-level="4"], .swatch[data-level="4"] { background: var(--grid-4); }
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0.45rem 0 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .swatch { display: inline-block; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --muted: #aaa;
+      --line: #333;
+      --chart: #3fb950;
+      --chart-fill: rgba(63, 185, 80, 0.18);
+      --grid-0: #161b22;
+      --grid-1: #0e4429;
+      --grid-2: #006d32;
+      --grid-3: #26a641;
+      --grid-4: #39d353;
+      --dot-idle: #555;
+      --dot-inset: inset 0 1px 1px rgba(255, 255, 255, 0.28);
+      --glow-ok: #3fb950;
+      --glow-down: #ff7b72;
+      --glow-busy: #e3b341;
+      --glow: 0 0 8px;
+      --down-text: #f04438;
+      --surface: #2a2a2a;
+      --control-border: #3a3a3a;
+      --rule: #3a3a3a;
+      --rule-soft: #2a2a2a;
+    }
+    body { background: #141414; color: #eee; }
+    .nav { background: #1c1c1c; border-bottom-color: #333; }
+    .light { background: #242424; border-color: #3a3a3a; }
+    .dot { background: var(--dot-idle); }
+    th, td { border-bottom-color: var(--rule-soft); }
+    thead th { border-bottom-color: var(--rule); }
+    .cell, .swatch { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05); }
+    #hourly-tip { background: #2a2a2a; color: #eee; border: 1px solid #3a3a3a; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="brand">Status</div>
+  <div class="nav-end">
+  <form id="key-form">
+    <label for="proxy-key">Proxy API key</label>
+    <input id="proxy-key" type="password" autocomplete="off">
+    <button type="submit">Connect</button>
+    <p id="error" hidden></p>
+  </form>
+  <div class="lights" id="bar" data-live="" data-busy="0">
+    <p class="light" data-lamp="link"><span class="dot"></span><span id="link-label">Not connected</span></p>
+    <p class="light" data-lamp="busy"><span class="dot"></span><span id="busy-label">Idle</span></p>
+  </div>
+  </div>
+</header>
+<main>
+<section class="panel" id="activity" hidden>
+<div class="charts">
+<div class="chart-hour">
+<h2>Last 24 hours <span id="hourly-total"></span></h2>
+<div class="hourly-wrap">
+<svg id="hourly" viewBox="0 0 640 180" role="img" aria-label="Calls over the last 24 hours"></svg>
+<div id="hourly-tip" hidden></div>
+</div>
+</div>
+<div class="chart-year">
+<h2>Last year <span id="daily-total"></span></h2>
+<div class="grid-scroll">
+<div class="months" id="months"></div>
+<div class="activity-body">
+<div class="dow" aria-hidden="true"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div>
+<div id="grid" role="img" aria-label="Calls by day"></div>
+</div>
+</div>
+<p class="legend"><span>Less</span><span class="swatch" data-level="0"></span><span class="swatch" data-level="1"></span><span class="swatch" data-level="2"></span><span class="swatch" data-level="3"></span><span class="swatch" data-level="4"></span><span>More</span></p>
+</div>
+</div>
+</section>
+<h2>Recent calls</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Time</th><th>Address</th><th>Model</th><th>Request (bytes)</th><th>Response (bytes)</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+</div>
+</main>
+<script type="module" src="/status.js"></script>
+</body>
+</html>

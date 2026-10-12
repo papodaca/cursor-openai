@@ -11,6 +11,8 @@ export type AppConfig = {
   apiBaseURL: string
   agentBaseURL?: string
   modelsAllowlist?: string[]
+  /** SQLite file for recent status rows. `:memory:` keeps them private to this process. */
+  statusDb: string
 }
 
 export type CliOptions = {
@@ -21,6 +23,7 @@ export type CliOptions = {
   apiBaseURL?: string
   agentBaseURL?: string
   modelsAllowlist?: string[]
+  statusDb?: string
 }
 
 function optionalEnv(name: string): string | undefined {
@@ -59,6 +62,7 @@ export function parseArgs(argv: string[]): CliOptions {
   let cacheDir: string | undefined
   let apiBaseURL: string | undefined
   let agentBaseURL: string | undefined
+  let statusDb: string | undefined
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -88,6 +92,9 @@ export function parseArgs(argv: string[]): CliOptions {
         break
       case "--agent-base-url":
         agentBaseURL = next()
+        break
+      case "--status-db":
+        statusDb = next()
         break
       case "--help":
       case "-h":
@@ -122,6 +129,7 @@ export function parseArgs(argv: string[]): CliOptions {
     apiBaseURL,
     agentBaseURL,
     modelsAllowlist,
+    statusDb,
   }
 }
 
@@ -146,6 +154,7 @@ Options:
   --cache-dir <path>      Model cache directory
   --api-base-url <url>    Cursor API base (default https://api2.cursor.sh)
   --agent-base-url <url>  Cursor agent Run host override
+  --status-db <path>      Status history sqlite file (default ./status.sqlite)
 `
 }
 
@@ -167,5 +176,19 @@ export function loadConfig(cli: CliOptions, env: NodeJS.ProcessEnv = process.env
       "https://api2.cursor.sh",
     agentBaseURL: cli.agentBaseURL ?? optionalEnv("CURSOR_AGENT_BASE_URL"),
     modelsAllowlist: cli.modelsAllowlist,
+    statusDb: resolveStatusDb(cli.statusDb ?? envValue(env, "CURSOR_STATUS_DB") ?? "status.sqlite"),
   }
+}
+
+function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name]
+  if (value === undefined || value.trim() === "") return undefined
+  return value.trim()
+}
+
+function resolveStatusDb(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) throw new Error("Status database path is empty")
+  if (trimmed === ":memory:") return trimmed
+  return path.resolve(trimmed)
 }

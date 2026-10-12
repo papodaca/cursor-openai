@@ -1,11 +1,12 @@
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
+import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3StreamPart } from "@ai-sdk/provider"
 import { parseChatCompletionRequest } from "./openai/request.ts"
 import { ApiError, mapProviderError } from "./errors.ts"
 import { requireProxyApiKey } from "./auth.ts"
 import { HelpRequested, loadConfig, parseArgs, resolveAuthPath } from "./config.ts"
 import type { AppConfig } from "./config.ts"
-import { createHandler } from "./server.ts"
+import { createHandler, statusRoutes } from "./server.ts"
 import { listModels, normalizeModelId } from "./models.ts"
 import {
   decodeJwtExpiryMs,
@@ -19,6 +20,7 @@ const baseConfig: AppConfig = {
   authPath: "/tmp/cursor-openai-auth.json",
   cacheDir: "/tmp/cursor-openai-test-cache",
   apiBaseURL: "https://api2.cursor.sh",
+  statusDb: ":memory:",
 }
 
 const authStub = {
@@ -179,6 +181,29 @@ describe("CLI / config", () => {
     expect(cfg.port).toBe(8787)
     expect(cfg.apiBaseURL).toBe("https://api2.cursor.sh")
     expect(cfg.proxyApiKey).toBe("k")
+    expect(cfg.statusDb).toBe(path.resolve("status.sqlite"))
+  })
+
+  test("parseArgs and loadConfig accept --status-db", () => {
+    const cli = parseArgs([
+      "--auth",
+      "@/tmp/a.json",
+      "--api-key",
+      "k",
+      "--status-db",
+      "var/calls.sqlite",
+    ])
+    expect(cli.statusDb).toBe("var/calls.sqlite")
+    const cfg = loadConfig(cli, {})
+    expect(cfg.statusDb).toBe(path.resolve("var/calls.sqlite"))
+  })
+
+  test("loadConfig reads CURSOR_STATUS_DB and keeps :memory:", () => {
+    const cli = { authPath: "/tmp/a.json", proxyApiKey: "k" }
+    expect(loadConfig(cli, { CURSOR_STATUS_DB: "data/status.sqlite" }).statusDb).toBe(
+      path.resolve("data/status.sqlite"),
+    )
+    expect(loadConfig({ ...cli, statusDb: ":memory:" }, {}).statusDb).toBe(":memory:")
   })
 })
 
@@ -482,5 +507,504 @@ describe("HTTP routes", () => {
       }),
     )
     expect(res.status).toBe(401)
+  })
+})
+
+function emptyUsage() {
+  return {
+    inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 1, text: undefined, reasoning: undefined },
+  }
+}
+
+function textModel(text: string): LanguageModelV3 {
+  const parts: LanguageModelV3StreamPart[] = [
+    { type: "text-delta", id: "0", delta: text },
+    {
+      type: "finish",
+      finishReason: { unified: "stop", raw: undefined },
+      usage: emptyUsage(),
+    },
+  ]
+  return {
+    specificationVersion: "v3",
+    provider: "mock",
+    modelId: "mock-model",
+    supportedUrls: {},
+    async doGenerate(_options: LanguageModelV3CallOptions) {
+      return {
+        content: [{ type: "text", text }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: emptyUsage(),
+        warnings: [],
+      }
+    },
+    async doStream(_options: LanguageModelV3CallOptions) {
+      return {
+        stream: new ReadableStream<LanguageModelV3StreamPart>({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part)
+            controller.close()
+          },
+        }),
+      }
+    },
+  }
+}
+
+function chatBody(model: string, stream = false): string {
+  return JSON.stringify({
+    model,
+    messages: [{ role: "user", content: "Hi" }],
+    ...(stream ? { stream: true } : {}),
+  })
+}
+
+function expectStatus(
+  actual: { rows: Array<{ at?: unknown }>; inFlight: boolean },
+  expected: { rows: unknown[]; inFlight: boolean },
+) {
+  expect(actual.inFlight).toBe(expected.inFlight)
+  expect(actual.rows).toHaveLength(expected.rows.length)
+  actual.rows.forEach((row, index) => {
+    expect(row).toMatchObject(expected.rows[index] as object)
+    expect(row.at).toEqual(expect.any(Number))
+  })
+}
+
+function chatPost(body: string, key = "proxy-secret"): Request {
+  return new Request("http://localhost/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
+    body,
+  })
+}
+
+describe("chat completion log", () => {
+  test("non-stream POST stores response bytes and leaves the count at 0", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hello"),
+    })
+    expectStatus(handler.statusSnapshot(), { rows: [], inFlight: false })
+    const body = chatBody("composer-2.5")
+    const res = await handler(chatPost(body))
+    const text = await res.text()
+    expect(res.status).toBe(200)
+    expectStatus(handler.statusSnapshot(), {
+      rows: [
+        {
+          address: "",
+          model: "composer-2.5",
+          requestBytes: Buffer.byteLength(body),
+          responseBytes: Buffer.byteLength(text),
+        },
+      ],
+      inFlight: false,
+    })
+  })
+
+  test("stream POST stores the done frame in response bytes", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hi"),
+    })
+    expect(handler.statusSnapshot().rows).toEqual([])
+    const res = await handler(chatPost(chatBody("composer-2.5", true)))
+    const text = await res.text()
+    expect(text).toContain("data: [DONE]\n\n")
+    expect(handler.statusSnapshot().rows[0]?.responseBytes).toBe(Buffer.byteLength(text))
+    expect(handler.statusSnapshot().inFlight).toBe(false)
+  })
+
+  test("stores cursor/auto before model normalization", async () => {
+    let seen = ""
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: (modelId) => {
+        seen = modelId
+        return textModel("ok")
+      },
+    })
+    expect(handler.statusSnapshot().rows).toEqual([])
+    const res = await handler(chatPost(chatBody("cursor/auto")))
+    expect(res.status).toBe(200)
+    expect(seen).toBe("default")
+    expect(handler.statusSnapshot().rows[0]?.model).toBe("cursor/auto")
+  })
+
+  test("invalid JSON stores an empty model and the 400 body length", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("nope"),
+    })
+    const body = "not-json"
+    const res = await handler(chatPost(body))
+    const text = await res.text()
+    expect(res.status).toBe(400)
+    expectStatus(handler.statusSnapshot(), {
+      rows: [
+        {
+          address: "",
+          model: "",
+          requestBytes: Buffer.byteLength(body),
+          responseBytes: Buffer.byteLength(text),
+        },
+      ],
+      inFlight: false,
+    })
+  })
+
+  test("wrong proxy key stores nothing", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("nope"),
+    })
+    const res = await handler(chatPost(chatBody("composer-2.5"), "wrong"))
+    expect(res.status).toBe(401)
+    expectStatus(handler.statusSnapshot(), { rows: [], inFlight: false })
+  })
+
+  test("access token failure stores a row and does not change the count", async () => {
+    const handler = createHandler(baseConfig, {
+      getAccessToken: async () => {
+        throw new Error("refresh failed")
+      },
+    }, {
+      languageModel: () => textModel("nope"),
+    })
+    const res = await handler(chatPost(chatBody("composer-2.5")))
+    const text = await res.text()
+    expect(res.status).toBe(502)
+    expectStatus(handler.statusSnapshot(), {
+      rows: [
+        {
+          address: "",
+          model: "composer-2.5",
+          requestBytes: Buffer.byteLength(chatBody("composer-2.5")),
+          responseBytes: Buffer.byteLength(text),
+        },
+      ],
+      inFlight: false,
+    })
+  })
+
+  test("doStream throwing before a readable exists returns the count to 0", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => ({
+        ...textModel("x"),
+        async doStream() {
+          throw new Error("upstream down")
+        },
+      }),
+    })
+    expect(handler.statusSnapshot().inFlight).toBe(false)
+    const res = await handler(chatPost(chatBody("composer-2.5", true)))
+    const text = await res.text()
+    expect(res.status).toBe(502)
+    expect(text).toContain("upstream down")
+    expect(handler.statusSnapshot().rows).toHaveLength(1)
+    expect(handler.statusSnapshot().rows[0]?.responseBytes).toBe(Buffer.byteLength(text))
+    expect(handler.statusSnapshot().inFlight).toBe(false)
+  })
+
+  test("overlapping streams stay in flight until the last one finishes", async () => {
+    let entered = 0
+    let markBoth: () => void = () => {}
+    const bothEntered = new Promise<void>((resolve) => {
+      markBoth = resolve
+    })
+    const release: Array<() => void> = []
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => {
+        let open: () => void = () => {}
+        const gate = new Promise<void>((resolve) => {
+          open = resolve
+        })
+        release.push(open)
+        const model = textModel("x")
+        return {
+          ...model,
+          async doStream(options: LanguageModelV3CallOptions) {
+            entered += 1
+            if (entered === 2) markBoth()
+            await gate
+            return model.doStream(options)
+          },
+        }
+      },
+    })
+    expect(handler.statusSnapshot().inFlight).toBe(false)
+
+    const pendingA = handler(chatPost(chatBody("composer-2.5", true)))
+    const pendingB = handler(chatPost(chatBody("composer-2.5", true)))
+    await bothEntered
+    expect(handler.statusSnapshot().inFlight).toBe(true)
+
+    release[0]?.()
+    const resA = await pendingA
+    await resA.text()
+    expect(handler.statusSnapshot().inFlight).toBe(true)
+
+    release[1]?.()
+    const resB = await pendingB
+    await resB.text()
+    expect(handler.statusSnapshot().inFlight).toBe(false)
+    expect(handler.statusSnapshot().rows).toHaveLength(2)
+  })
+
+  test("a listening server records 127.0.0.1 and a direct call stores an empty address", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hi"),
+    })
+    expect(handler.statusSnapshot().rows).toEqual([])
+    const direct = await handler(chatPost(chatBody("composer-2.5")))
+    expect(direct.status).toBe(200)
+    expect(handler.statusSnapshot().rows[0]?.address).toBe("")
+
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req, served) {
+        const address = served.requestIP(req)?.address ?? ""
+        return handler(req, address)
+      },
+    })
+    try {
+      const body = chatBody("composer-2.5")
+      const res = await fetch(`http://127.0.0.1:${server.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer proxy-secret",
+        },
+        body,
+      })
+      expect(res.status).toBe(200)
+      const rows = handler.statusSnapshot().rows
+      expect(rows[0]?.address).toBe("127.0.0.1")
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test("a models failure does not become a chat row", async () => {
+    const handler = createHandler(baseConfig, {
+      getAccessToken: async () => {
+        throw new Error("no token")
+      },
+    })
+    const res = await handler(
+      new Request("http://localhost/v1/models", {
+        headers: { Authorization: "Bearer proxy-secret" },
+      }),
+    )
+    expect(res.status).toBe(502)
+    expect(handler.statusSnapshot().rows).toEqual([])
+  })
+})
+
+function eventsRequest(key?: string): Request {
+  return new Request("http://localhost/status/events", {
+    headers: key ? { Authorization: `Bearer ${key}` } : {},
+  })
+}
+
+async function readStatusText(
+  res: Response,
+  until?: (text: string) => boolean,
+): Promise<{ text: string; closed: boolean }> {
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let text = ""
+  let closed = false
+  const deadline = Date.now() + 1500
+  try {
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now())
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("status stream timed out")), remaining)
+        }),
+      ])
+      if (chunk.done) {
+        closed = true
+        break
+      }
+      text += decoder.decode(chunk.value, { stream: true })
+      if (!until || until(text)) break
+    }
+    return { text, closed }
+  } finally {
+    await reader.cancel()
+  }
+}
+
+describe("status routes", () => {
+  test("GET /status is an empty html shell", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hi"),
+    })
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      routes: statusRoutes,
+      fetch(req) {
+        return handler(req)
+      },
+    })
+    try {
+      const origin = `http://127.0.0.1:${server.port}`
+      const before = await fetch(`${origin}/status`)
+      expect(before.status).toBe(200)
+      expect(before.headers.get("Content-Type")).toContain("text/html")
+      expect(before.headers.get("Access-Control-Allow-Origin")).toBeNull()
+      const beforeHtml = await before.text()
+      const recorded = await handler(chatPost(chatBody("</script>")))
+      expect(recorded.status).toBe(200)
+      const afterHtml = await (await fetch(`${origin}/status`)).text()
+      const script = await (await fetch(`${origin}/status.js`)).text()
+      const parser = await (await fetch(`${origin}/status-snapshot.js`)).text()
+      expect(afterHtml).toBe(beforeHtml)
+      expect(afterHtml).toContain('id="hourly"')
+      expect(afterHtml).toContain('id="grid"')
+      expect(afterHtml).toContain("Last 24 hours")
+      expect(afterHtml).toContain("Last year")
+      expect(afterHtml).toContain("<table")
+      expect(afterHtml).toContain("Not connected")
+      expect(afterHtml).toContain('class="nav"')
+      expect(afterHtml).toContain('data-lamp="busy"')
+      expect(afterHtml).toContain("@media (prefers-color-scheme: dark)")
+      expect(afterHtml).toContain("color-scheme: dark")
+      expect(afterHtml).toContain('type="password"')
+      expect(afterHtml).toContain('autocomplete="off"')
+      expect(afterHtml).toContain('src="/status.js"')
+      expect(afterHtml).toContain("form[hidden]")
+      expect(script).toContain('from "./status-snapshot.js"')
+      expect(script).toContain('from "./status-chart.js"')
+      const chart = await (await fetch(`${origin}/status-chart.js`)).text()
+      expect(chart).toContain("export function levels")
+      expect(script).toContain("textContent")
+      expect(script).toContain('get("api_key")')
+      expect(script).toContain("form.hidden")
+      expect(parser).toContain("function createSnapshotParser")
+      for (const text of [afterHtml, script, parser]) {
+        expect(text).not.toContain("proxy-secret")
+        expect(text).not.toContain("proxyApiKey")
+        expect(text).not.toContain("composer-2.5")
+        expect(text).not.toContain("localStorage")
+        expect(text).not.toContain("sessionStorage")
+      }
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test("GET /status/events starts with an empty snapshot", async () => {
+    const handler = createHandler(baseConfig, authStub)
+    const res = await handler(eventsRequest("proxy-secret"))
+    expect(res.status).toBe(200)
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream")
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull()
+    const { text, closed } = await readStatusText(res)
+    expect(closed).toBe(false)
+    const payload = JSON.parse(text.slice("data: ".length).trim()) as {
+      rows: unknown[]
+      inFlight: boolean
+      hourly: number[]
+      daily: number[]
+    }
+    expect(payload.rows).toEqual([])
+    expect(payload.inFlight).toBe(false)
+    expect(payload.hourly).toEqual(Array(24).fill(0))
+    expect(payload.daily.length).toBeGreaterThanOrEqual(365)
+    expect(payload.daily.length).toBeLessThanOrEqual(371)
+    expect(payload.daily.every((count) => count === 0)).toBe(true)
+  })
+
+  test("GET /status/events replays a recorded chat", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hi"),
+    })
+    const posted = await handler(chatPost(chatBody("composer-2.5")))
+    expect(posted.status).toBe(200)
+    const res = await handler(eventsRequest("proxy-secret"))
+    const { text } = await readStatusText(res)
+    const payload = JSON.parse(text.slice("data: ".length).trim()) as {
+      rows: Array<{ model: string }>
+      inFlight: boolean
+    }
+    expect(payload.inFlight).toBe(false)
+    expect(payload.rows[0]?.model).toBe("composer-2.5")
+    const chart = payload as { hourly?: number[]; daily?: number[] }
+    expect(chart.hourly?.reduce((sum, count) => sum + count, 0)).toBe(1)
+    expect(chart.daily?.reduce((sum, count) => sum + count, 0)).toBe(1)
+  })
+
+  test("GET /status/events without a key is 401 and adds no row", async () => {
+    const handler = createHandler(baseConfig, authStub)
+    const res = await handler(eventsRequest())
+    expect(res.status).toBe(401)
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull()
+    expect(await res.json()).toEqual({
+      error: {
+        message: "Missing Authorization header. Expected Bearer <api-key>.",
+        type: "authentication_error",
+        code: "missing_credentials",
+      },
+    })
+    expectStatus(handler.statusSnapshot(), { rows: [], inFlight: false })
+  })
+
+  test("status events stay open and emit a heartbeat before a later row", async () => {
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hi"),
+      statusHeartbeatMs: 20,
+    })
+    const res = await handler(eventsRequest("proxy-secret"))
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let text = ""
+    let posted = false
+    const deadline = Date.now() + 1500
+    try {
+      while (Date.now() < deadline) {
+        const chunk = await reader.read()
+        expect(chunk.done).toBe(false)
+        text += decoder.decode(chunk.value, { stream: true })
+        if (!posted && text.includes(": keep-alive\n\n")) {
+          const post = await handler(chatPost(chatBody("composer-2.5")))
+          expect(post.status).toBe(200)
+          posted = true
+        }
+        if (posted && text.includes("composer-2.5")) break
+      }
+    } finally {
+      await reader.cancel()
+    }
+    expect(posted).toBe(true)
+    expect(text.indexOf(": keep-alive\n\n")).toBeGreaterThanOrEqual(0)
+    expect(text.indexOf("composer-2.5")).toBeGreaterThan(text.indexOf(": keep-alive\n\n"))
+  })
+
+  test("a throwing subscriber does not fail a later chat post", async () => {
+    let calls = 0
+    const bad = {
+      enqueue() {
+        calls += 1
+        throw new Error("blocked")
+      },
+    }
+    const sinks = new Set([bad])
+    const handler = createHandler(baseConfig, authStub, {
+      languageModel: () => textModel("Hi"),
+      statusSinks: sinks,
+    })
+    const res = await handler(chatPost(chatBody("composer-2.5")))
+    expect(res.status).toBe(200)
+    expect(calls).toBe(1)
+    expect(sinks.has(bad)).toBe(false)
+    const again = await handler(chatPost(chatBody("composer-2.5")))
+    expect(again.status).toBe(200)
+    expect(calls).toBe(1)
   })
 })

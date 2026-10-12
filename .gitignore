@@ -38,3 +38,10 @@ auth.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Compound Engineering local scratch
+.context/compound-engineering/
+
+# status history (default --status-db path)
+status.sqlite
+status.sqlite-*

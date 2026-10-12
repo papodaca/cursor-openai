@@ -27,7 +27,19 @@ import {
 import { ApiError, corsHeaders, mapProviderError } from "./errors.ts"
 
 /** SSE comment frame written during upstream silence to keep the connection warm. */
-const SSE_HEARTBEAT = ": keep-alive\n\n"
+export const SSE_HEARTBEAT = ": keep-alive\n\n"
+
+export const SSE_RESPONSE_HEADERS = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+} as const
+
+export type ChatStreamObserver = {
+  enqueued(byteLength: number): void
+  ready(): void
+  settled(): void
+}
 
 /**
  * Cadence for SSE heartbeats. Must stay well below Bun.serve's default 10s
@@ -216,6 +228,7 @@ export async function handleChatCompletion(args: {
   abortSignal?: AbortSignal
   headers?: Record<string, string | undefined>
   heartbeatIntervalMs?: number
+  streamObserver?: ChatStreamObserver
 }): Promise<Response> {
   const { model, request, abortSignal, headers } = args
   const heartbeatIntervalMs = args.heartbeatIntervalMs ?? DEFAULT_SSE_HEARTBEAT_INTERVAL_MS
@@ -243,11 +256,35 @@ export async function handleChatCompletion(args: {
 
   const { stream } = await model.doStream(options)
   const encoder = new TextEncoder()
+  let settled = false
+  const settle = () => {
+    if (settled) return
+    settled = true
+    args.streamObserver?.settled()
+  }
 
   const readable = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const write = (bytes: Uint8Array) => {
+        controller.enqueue(bytes)
+        args.streamObserver?.enqueued(bytes.byteLength)
+      }
       const enqueue = (payload: unknown) => {
-        controller.enqueue(encoder.encode(sseData(payload)))
+        write(encoder.encode(sseData(payload)))
+      }
+      const closeStream = () => {
+        try {
+          controller.close()
+        } finally {
+          settle()
+        }
+      }
+      const failStream = (error: Error) => {
+        try {
+          controller.error(error)
+        } finally {
+          settle()
+        }
       }
 
       enqueue(
@@ -293,7 +330,7 @@ export async function handleChatCompletion(args: {
             clearHeartbeatTimer()
             return winner.result
           }
-          controller.enqueue(encoder.encode(SSE_HEARTBEAT))
+          write(encoder.encode(SSE_HEARTBEAT))
         }
       }
 
@@ -408,8 +445,8 @@ export async function handleChatCompletion(args: {
             usage: mapUsage(usage),
           }),
         )
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
-        controller.close()
+        write(encoder.encode("data: [DONE]\n\n"))
+        closeStream()
       } catch (err) {
         const mapped = mapProviderError(err) ?? err
         const message = mapped instanceof Error ? mapped.message : String(mapped)
@@ -421,28 +458,28 @@ export async function handleChatCompletion(args: {
               code: mapped instanceof ApiError ? mapped.code : null,
             },
           })
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
-          controller.close()
+          write(encoder.encode("data: [DONE]\n\n"))
+          closeStream()
         } catch {
-          controller.error(mapped instanceof Error ? mapped : new Error(message))
+          failStream(mapped instanceof Error ? mapped : new Error(message))
         }
       } finally {
         clearHeartbeatTimer()
       }
     },
     cancel() {
+      settle()
       // Client disconnected; AbortSignal on the request should stop upstream work.
       // Note: provider keeps Cursor Runs open across tool_calls even if this HTTP
       // response ends normally — do not treat normal completion as cancel.
     },
   })
+  args.streamObserver?.ready()
 
   return new Response(readable, {
     headers: {
       ...corsHeaders(),
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
+      ...SSE_RESPONSE_HEADERS,
     },
   })
 }
