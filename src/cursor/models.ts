@@ -353,8 +353,8 @@ const IMAGE_INPUT_OVERRIDES = new Set(["grok-4.7"])
 
 function applyImageInputOverride(
   modelId: string,
-  supportsImages: boolean | undefined,
-): boolean | undefined {
+  supportsImages: boolean | undefined | null,
+): boolean | undefined | null {
   if (IMAGE_INPUT_OVERRIDES.has(modelId)) return true
   return supportsImages
 }
@@ -425,7 +425,7 @@ export function mapAvailableModelsResponse(
       displayName: (e.clientDisplayName ?? e.client_display_name ?? name) as string,
       supportsThinking: apiBoolean(e, ["supportsThinking", "supports_thinking"]),
       supportsAgent: apiBoolean(e, ["supportsAgent", "supports_agent"]),
-      ...(supportsImages === undefined ? {} : { supportsImages }),
+      ...(typeof supportsImages === "boolean" ? { supportsImages } : {}),
       maxContext: variantBaseContext ?? positiveNumber(e.contextTokenLimit ?? e.context_token_limit),
       maxContextForMaxMode:
         variantMaxContext ??
